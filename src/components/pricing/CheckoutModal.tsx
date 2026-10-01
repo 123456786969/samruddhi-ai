@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Check, ShieldCheck, Sparkles, CreditCard, QrCode, Building, ArrowRight, Loader2, CheckCircle2, Copy, AlertCircle, FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { getAuthHeaders } from '../../lib/api';
 
 export interface CheckoutSessionData {
   session_id: string;
@@ -80,9 +81,9 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       setSuccessResult(data.session);
 
       // Dispatch real-time admin alert to rajubasavanahalli@gmail.com
-      fetch('/api/admin/notify', {
+      getAuthHeaders().then(authHeaders => fetch('/api/admin/notify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           type: 'checkout',
           email: cardName || (sessionData as any).customer_email || 'subscriber@realty.com',
@@ -96,7 +97,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             sessionId: sessionData.session_id
           }
         })
-      }).catch(err => console.warn('Admin notification notice:', err));
+      })).catch(err => console.warn('Admin notification notice:', err));
 
       if (onSuccess) {
         onSuccess();

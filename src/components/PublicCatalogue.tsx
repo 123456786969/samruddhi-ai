@@ -4,7 +4,6 @@ import { db } from '../lib/firebase';
 import { collection, query, where, getDocs, limit, addDoc, serverTimestamp } from 'firebase/firestore';
 import { Building2, Sparkles, MapPin, Bed, Maximize, Phone, User, Calendar, MessageSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { dispatchAutomatedWhatsApp } from '../services/whatsappService';
 
 export const PublicCatalogue: React.FC = () => {
   const { slug } = useParams();
@@ -91,24 +90,9 @@ export const PublicCatalogue: React.FC = () => {
       const leadData = await res.json();
       const leadId = leadData?.leadId;
 
-      // Dispatch automated WhatsApp confirmation & brochure only if automation not paused
-      if (leadId && !leadData?.automation_paused) {
-        try {
-          await dispatchAutomatedWhatsApp({
-            agentId: agent.id,
-            leadId,
-            leadName,
-            leadPhone,
-            agentName: agent.name || 'Property Advisor',
-            businessName: agent.businessName || 'Samruddhi Realty',
-            agentSlug: agent.slug || '',
-            propertyType: selectedProperty.title || 'Luxury Residence',
-            preferredLocation: selectedProperty.location || agent.primaryCity || 'Prime Metro Hubs',
-            triggerType: 'new_lead_instant',
-          });
-        } catch (waErr) {
-          console.warn('Could not dispatch automated WhatsApp on visit booking:', waErr);
-        }
+      // The server sends the visitor's WhatsApp confirmation itself (see POST /api/public/leads)
+      if (!res.ok || !leadId) {
+        throw new Error(leadData?.error || 'Could not submit your request. Please try again.');
       }
 
       setBookingSuccess(true);

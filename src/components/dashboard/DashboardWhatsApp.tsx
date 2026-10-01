@@ -1,3 +1,4 @@
+import { getAuthHeaders } from '../../lib/api';
 import React, { useState, useEffect } from 'react';
 import { useOutletContext, useNavigate, Link } from 'react-router-dom';
 import { db, auth } from '../../lib/firebase';
@@ -255,7 +256,7 @@ export const DashboardWhatsApp: React.FC = () => {
   const checkGatewayStatus = async () => {
     try {
       setCheckingGateway(true);
-      const res = await fetch('/api/whatsapp/status');
+      const res = await fetch('/api/whatsapp/status', { headers: await getAuthHeaders() });
       const data = await res.json();
       setGatewayStatus(data);
     } catch (err) {

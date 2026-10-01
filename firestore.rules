@@ -129,12 +129,19 @@ service cloud.firestore {
     }
 
     // 7. Subscriptions and Usage
+    // Billing state is written ONLY by the server (firebase-admin bypasses rules). Clients may read
+    // their own records but must never write them, otherwise anyone could grant themselves a plan,
+    // extra voice minutes, or reset their usage counters.
     match /subscriptions/{userId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false;
     }
 
     match /usage/{usageId} {
-      allow read, write: if isSignedIn() && (resource == null || resource.data.agent_id == request.auth.uid);
+      allow read: if isSignedIn() && resource != null && resource.data.agent_id == request.auth.uid;
+      allow write: if false;
     }
+
+    // processed_payments is server-only (covered by the default deny above)
   }
 }

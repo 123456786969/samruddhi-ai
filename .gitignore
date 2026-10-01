@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local runtime data (OTP/billing dev stores) - never commit
+.data/
+.otp_store.json
+.billing_store.json

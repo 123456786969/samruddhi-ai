@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom';
 import { db, auth } from '../../lib/firebase';
 import { doc, updateDoc, setDoc, getDoc } from 'firebase/firestore';
 import { User, Settings as SettingsIcon, Crown, Check, AlertCircle, Loader2 } from 'lucide-react';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, getAuthHeaders } from '../../lib/api';
 
 export const DashboardSettings: React.FC = () => {
   const { user, userData } = useOutletContext<any>();
@@ -342,7 +342,7 @@ export const DashboardSettings: React.FC = () => {
               try {
                 const res = await fetch('/api/admin/notify', {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
                   body: JSON.stringify({
                     type: 'login',
                     email: user.email || 'partner-lead@realty.com',

@@ -1,3 +1,4 @@
+import { getAuthHeaders } from '../lib/api';
 import { db } from '../lib/firebase';
 import { collection, addDoc, getDocs, query, where, getDoc, doc } from 'firebase/firestore';
 import { WhatsAppTemplate, WhatsAppLog, WhatsAppAutomationConfig } from '../types';
@@ -145,6 +146,7 @@ export async function sendWhatsAppMessage(params: SendWhatsAppParams): Promise<S
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(await getAuthHeaders()),
       },
       body: JSON.stringify({
         phone_number: params.phone_number,

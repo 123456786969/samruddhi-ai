@@ -1,3 +1,4 @@
+import { getAuthHeaders } from '../lib/api';
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Building2, User, KeyRound, RefreshCw, CheckCircle2, Sparkles, ShieldCheck, Mail, ArrowRight, ExternalLink, AlertTriangle } from 'lucide-react';
@@ -190,8 +191,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           email: email.trim().toLowerCase(), 
-          otp: cleanOtp,
-          simulatedCode: simulatedOtp || undefined
+          otp: cleanOtp
         })
       });
 
@@ -224,9 +224,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
         const userPhone = uData.phone || '';
 
         // Dispatch real-time admin alert to rajubasavanahalli@gmail.com
-        fetch('/api/admin/notify', {
+        getAuthHeaders().then(authHeaders => fetch('/api/admin/notify', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
           body: JSON.stringify({
             type: 'login',
             email: (uData.email || email).trim().toLowerCase(),
@@ -235,7 +235,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
             phone: userPhone,
             details: { loginProvider: 'Auth & OTP', uid }
           })
-        }).catch(err => console.warn('Admin notification notice:', err));
+        })).catch(err => console.warn('Admin notification notice:', err));
 
         // Save demo/direct user object if no Firebase Auth popup user
         const userDataToStore = JSON.stringify({
@@ -299,9 +299,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
       }
 
       // Dispatch real-time admin alert to rajubasavanahalli@gmail.com
-      fetch('/api/admin/notify', {
+      getAuthHeaders().then(authHeaders => fetch('/api/admin/notify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           type: 'onboarding',
           email: cleanEmail,
@@ -309,7 +309,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
           companyName: agency,
           details: { slug, uid }
         })
-      }).catch(err => console.warn('Admin notification notice:', err));
+      })).catch(err => console.warn('Admin notification notice:', err));
       
       // Save demo/direct user object
       const userDataToStore = JSON.stringify({

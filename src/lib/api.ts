@@ -18,6 +18,21 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Returns an Authorization header for the signed-in Firebase user (empty if signed out).
+ * Use with plain fetch() when you need to read non-2xx response bodies yourself.
+ */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    if (auth.currentUser) {
+      return { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` };
+    }
+  } catch (e) {
+    console.warn('[getAuthHeaders] Could not retrieve Firebase ID token:', e);
+  }
+  return {};
+}
+
 // Global 402 event listener target for toast/modal dispatch
 export const BILLING_402_EVENT = 'samruddhi:billing_402';
 
