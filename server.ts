@@ -14,11 +14,11 @@ import {
   requireAdmin,
   requireIdentity,
   getPlanStatus,
-  recordLeadCreated,
   recordVoiceMinutes,
   requireVoiceMinutes,
   saveSubscription,
-  createLeadDoc,
+  createLeadWithinLimit,
+  PlanLimitError,
   getLeadDoc,
   updateLeadDoc,
   createVisitDoc,
@@ -825,18 +825,12 @@ async function startServer() {
         return res.status(400).json({ error: 'Lead phone is required (max 20 characters)' });
       }
 
-      // Check plan status
-      const planStatus = await getPlanStatus(uid);
-      const isOverLimit = planStatus.remaining.leads <= 0 || planStatus.status !== 'active';
-      const automation_paused = isOverLimit;
-
       const leadDoc: Record<string, any> = {
         agent_id: uid,
         name: name.trim(),
         phone: phone.trim(),
         source: source || 'Walk-in',
         stage: stage || 'New',
-        automation_paused,
         created_at: Date.now(),
       };
 
@@ -848,8 +842,13 @@ async function startServer() {
       if (notes) leadDoc.notes = notes.trim();
       if (Array.isArray(tags)) leadDoc.tags = tags;
 
-      const docRef = await createLeadDoc(leadDoc);
-      await recordLeadCreated(uid);
+      // Make sure the default admin's plan exists, then check the limit + create + count atomically.
+      await getPlanStatus(uid, req.user?.email);
+      const created = await createLeadWithinLimit(uid, leadDoc, 'agent');
+      const docRef = { id: created.id };
+      const isOverLimit = false; // agents are blocked (402 LEAD_LIMIT) rather than over the limit
+      const automation_paused = created.automation_paused;
+      leadDoc.automation_paused = automation_paused;
 
       return res.status(201).json({
         success: true,
@@ -860,8 +859,9 @@ async function startServer() {
         lead: { id: docRef.id, ...leadDoc },
       });
     } catch (err: any) {
+      if (err instanceof PlanLimitError) return res.status(402).json(err.toJSON());
       console.error('[POST /api/leads] Error:', err);
-      return res.status(500).json({ error: err.message || 'Failed to create lead' });
+      return res.status(500).json({ error: 'Failed to create lead' });
     }
   });
 
@@ -922,25 +922,24 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid lead details.' });
       }
 
-      const planStatus = await getPlanStatus(agent_id);
-      const isOverLimit = planStatus.remaining.leads <= 0 || planStatus.status !== 'active';
-      const automation_paused = isOverLimit;
-
       const leadDoc: Record<string, any> = {
         agent_id,
         name: String(name).trim().slice(0, 200),
         phone: String(phone).trim().slice(0, 20),
         source: 'catalogue',
         stage: 'New',
-        score: isOverLimit ? 0 : 75,
-        automation_paused,
+        score: 75,
         created_at: Date.now(),
         last_contacted_at: Date.now(),
       };
       if (email) leadDoc.email = String(email).trim().slice(0, 100);
 
-      const leadRef = await createLeadDoc(leadDoc);
-      await recordLeadCreated(agent_id);
+      // A buyer enquiry is never dropped: over the agent's limit (or without an active plan) it is
+      // still saved, with automation paused and score 0, and is not counted against the cap.
+      const created = await createLeadWithinLimit(agent_id, leadDoc, 'public', { whenOverLimit: { score: 0 } });
+      const leadRef = { id: created.id };
+      const automation_paused = created.automation_paused;
+      const isOverLimit = created.overLimit;
 
       let visitId: string | null = null;
       if (property_id) {

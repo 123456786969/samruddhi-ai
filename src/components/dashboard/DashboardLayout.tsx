@@ -33,7 +33,7 @@ import {
 
 import { useAgentCollection } from '../../hooks/useAgentCollection';
 import { Lead, Task, Visit, Property } from '../../types';
-import { ToastProvider } from './ui/Toast';
+import { ToastProvider, useToast } from './ui/Toast';
 import { Avatar } from './ui/Avatar';
 import { Dropdown } from './ui/Dropdown';
 import { Tooltip } from './ui/Tooltip';
@@ -43,7 +43,7 @@ import { CommandPalette } from './CommandPalette';
 import { ShortcutsHelpModal } from './ShortcutsHelpModal';
 import { Drawer } from './ui/Drawer';
 import { VoiceTopUpModal } from './VoiceTopUpModal';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, BILLING_402_EVENT, Billing402EventDetail } from '../../lib/api';
 
 const SIDEBAR_COLLAPSED_KEY = 'samruddhi_sidebar_collapsed';
 
@@ -70,6 +70,30 @@ const DashboardInnerLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const shouldReduceMotion = useReducedMotion();
+  // A plan limit was hit anywhere in the app (API returned 402): offer the right next step.
+  const limitToast = useToast();
+  useEffect(() => {
+    const onLimit = (e: Event) => {
+      const d = (e as CustomEvent<Billing402EventDetail>).detail;
+      const topUp = d?.action === 'top_up';
+      const titles: Record<string, string> = {
+        LEAD_LIMIT: 'Lead limit reached',
+        VOICE_LIMIT: 'Out of voice minutes',
+        USER_LIMIT: 'User limit reached',
+        PLAN_REQUIRED: 'Plan required',
+      };
+      limitToast.toast({
+        type: 'error',
+        title: titles[d?.code] || 'Plan limit reached',
+        message: d?.message,
+        duration: 10000,
+        actionLabel: topUp ? 'Buy top-up' : 'Upgrade',
+        onAction: () => (topUp ? setIsTopUpOpen(true) : navigate('/dashboard/pricing')),
+      });
+    };
+    window.addEventListener(BILLING_402_EVENT, onLimit);
+    return () => window.removeEventListener(BILLING_402_EVENT, onLimit);
+  }, [limitToast, navigate]);
 
   // Save sidebar collapsed choice for current session
   const toggleSidebar = () => {

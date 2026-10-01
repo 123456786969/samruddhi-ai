@@ -12,6 +12,9 @@ export interface ToastItem {
   duration?: number;
   undoAction?: () => void;
   undoLabel?: string;
+  /** Generic call-to-action button (e.g. "Upgrade"); undoAction/undoLabel remain for undo toasts. */
+  onAction?: () => void;
+  actionLabel?: string;
 }
 
 interface ToastContextType {
@@ -95,15 +98,15 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               </div>
 
               {/* Undo action button */}
-              {t.undoAction && (
+              {(t.onAction || t.undoAction) && (
                 <button
                   onClick={() => {
-                    t.undoAction?.();
+                    (t.onAction || t.undoAction)?.();
                     dismiss(t.id);
                   }}
                   className="px-2 py-1 text-xs font-semibold text-[#D4AF37] hover:text-[#E5C358] bg-[rgba(212,175,55,0.12)] hover:bg-[rgba(212,175,55,0.2)] rounded-[6px] border border-[rgba(212,175,55,0.3)] transition-colors shrink-0"
                 >
-                  {t.undoLabel || 'Undo'}
+                  {t.actionLabel || t.undoLabel || 'Undo'}
                 </button>
               )}
 

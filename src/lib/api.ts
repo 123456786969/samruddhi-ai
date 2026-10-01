@@ -22,8 +22,10 @@ export class ApiError extends Error {
 export const BILLING_402_EVENT = 'samruddhi:billing_402';
 
 export interface Billing402EventDetail {
-  code: 'PLAN_REQUIRED' | 'VOICE_LIMIT' | string;
+  code: 'PLAN_REQUIRED' | 'LEAD_LIMIT' | 'VOICE_LIMIT' | 'USER_LIMIT' | string;
   message: string;
+  /** What the UI should offer: upgrade the plan, or buy a voice top-up pack. */
+  action?: 'upgrade' | 'top_up';
 }
 
 /**
@@ -62,6 +64,7 @@ export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = 
     const detail: Billing402EventDetail = {
       code: errorData.code || 'PLAN_REQUIRED',
       message: errorData.error || 'A subscription or voice minute top-up is required.',
+      action: errorData.action || (errorData.code === 'VOICE_LIMIT' ? 'top_up' : 'upgrade'),
     };
 
     if (typeof window !== 'undefined') {

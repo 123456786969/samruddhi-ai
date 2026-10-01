@@ -55,11 +55,24 @@ test('concurrent top-up credits are all applied', async () => {
   assert.equal((await b.getPlanStatus(uid)).remaining.voiceTopUp, 1000);
 });
 
-test('concurrent lead counter increments are not lost', async () => {
+test('concurrent lead creation never exceeds the plan limit and never loses a count', async () => {
   const uid = id('leads');
-  await b.saveSubscription(uid, activeStarter());
-  await Promise.all(Array.from({ length: 25 }, () => b.recordLeadCreated(uid)));
-  assert.equal((await b.getPlanStatus(uid)).usage.leads, 25);
+  await b.saveSubscription(uid, activeStarter()); // starter = 500 leads / cycle
+  // pre-fill usage to 490 so only 10 more fit
+  const cycle = (await b.getPlanStatus(uid)).usageCycle;
+  await b.adminDb.collection('usage').doc(b.usageDocId(uid, String(cycle.start))).set({ agent_id: uid, leads_created: 490 });
+  const results = await Promise.allSettled(
+    Array.from({ length: 25 }, (_, i) => b.createLeadWithinLimit(uid, { agent_id: uid, name: `L${i}`, phone: '9999999999', created_at: Date.now() }, 'agent'))
+  );
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 10);
+  const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+  assert.equal(rejected.length, 15);
+  assert.ok(rejected.every((r) => r.reason.code === 'LEAD_LIMIT' && r.reason.status === 402 && r.reason.action === 'upgrade'));
+  const s = await b.getPlanStatus(uid);
+  assert.equal(s.usage.leads, 500);
+  assert.equal(s.remaining.leads, 0);
+  const stored = await b.adminDb.collection('leads').where('agent_id', '==', uid).get();
+  assert.equal(stored.size, 10); // blocked attempts created nothing
 });
 
 test('expired subscription becomes expired exactly once and loses entitlements', async () => {

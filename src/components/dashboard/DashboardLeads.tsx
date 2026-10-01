@@ -129,7 +129,8 @@ export const DashboardLeads: React.FC = () => {
       fetchLeads(); // Refresh list
     } catch (err: any) {
       console.error(err);
-      alert(err.message || 'Failed to save lead');
+      // Plan-limit errors (402) are shown by the global "Upgrade / Buy top-up" prompt
+      if (err?.status !== 402) alert(err.message || 'Failed to save lead');
     } finally {
       setSubmitting(false);
     }

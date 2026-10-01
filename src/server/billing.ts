@@ -5,6 +5,7 @@ import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { isOtpClaimValid } from '../shared/otp';
+import { usageCycle } from '../shared/cycles';
 import { PLANS, PlanId, priceFor, priceForTopUp, VoiceTopUpPack, VOICE_TOP_UP_PACKS } from '../shared/plans';
 
 // Load Firebase configuration
@@ -169,15 +170,37 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
 }
 
 /**
- * Computes current month in Indian Standard Time (Asia/Kolkata) formatted as YYYY-MM
+ * Thrown when a plan limit stops an action. `code` + `action` let the frontend show the right
+ * call to action ("Upgrade" vs "Buy top-up"); `status` is always 402 Payment Required.
  */
-export function getCurrentMonthIST(): string {
-  const d = new Date();
-  const utc = d.getTime() + d.getTimezoneOffset() * 60000;
-  const ist = new Date(utc + 3600000 * 5.5);
-  const year = ist.getFullYear();
-  const month = String(ist.getMonth() + 1).padStart(2, '0');
-  return `${year}-${month}`;
+export type PlanLimitCode = 'PLAN_REQUIRED' | 'LEAD_LIMIT' | 'VOICE_LIMIT' | 'USER_LIMIT';
+export class PlanLimitError extends Error {
+  status = 402;
+  limit?: number;
+  used?: number;
+  remaining?: number;
+  constructor(
+    public code: PlanLimitCode,
+    message: string,
+    public action: 'upgrade' | 'top_up',
+    details: { limit?: number; used?: number; remaining?: number } = {}
+  ) {
+    super(message);
+    Object.assign(this, details);
+  }
+  toJSON() {
+    const out: Record<string, any> = { error: this.message, code: this.code, action: this.action };
+    for (const k of ['limit', 'used', 'remaining'] as const) if (this[k] !== undefined) out[k] = this[k];
+    return out;
+  }
+}
+
+export const usageDocId = (uid: string, cycleKey: string) => `${uid}_${cycleKey}`;
+
+/** True when the subscription document currently entitles the user to their plan. */
+function isEntitled(sub: any, now: number): boolean {
+  return !!sub && sub.status === 'active' && !!sub.plan_id && !!PLANS[sub.plan_id as PlanId] &&
+    (!sub.current_period_end || now <= sub.current_period_end);
 }
 
 export interface PlanStatus {
@@ -207,6 +230,8 @@ export interface PlanStatus {
     voiceAllowance: number;
     voiceTopUp: number;
   };
+  /** Current usage cycle (limits reset at `end`). null when there has never been a subscription. */
+  usageCycle: { start: number | null; end: number | null };
   isFoundingPartner: boolean;
   foundingPartnerUntil: number | null;
   pendingPlanId: string | null;
@@ -224,7 +249,14 @@ function db(): any {
   return adminDb;
 }
 
-const randomSuffix = () => Math.random().toString(36).substring(2, 8);
+/**
+ * Transactions on the same document (usage counters, a subscription) contend when many requests for
+ * one agent arrive together - e.g. a bulk lead import. The SDK default of 5 attempts is too low for
+ * that, so allow plenty of retries rather than failing a legitimate request.
+ */
+const TX_ATTEMPTS = 30;
+const runTx = <T>(fn: (tx: any) => Promise<T>): Promise<T> => db().runTransaction(fn, { maxAttempts: TX_ATTEMPTS });
+
 
 /**
  * Reads user's subscription and current month usage, enforcing expiry and limits.
@@ -241,7 +273,7 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
 
   // Read (and, for the default admin on first access, create) in one transaction so two
   // simultaneous first requests can't both provision or overwrite each other.
-  let sub: any = await db().runTransaction(async (tx: any) => {
+  let sub: any = await runTx(async (tx: any) => {
     const snap = await tx.get(subRef);
     if (snap.exists) return snap.data();
     if (!isDefaultAdmin) return null;
@@ -273,7 +305,7 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
   // Check if current period has expired. Re-read inside a transaction so a concurrent
   // payment that just extended the period is never overwritten with "expired".
   if (status === 'active' && currentPeriodEnd && now > currentPeriodEnd) {
-    const next: any = await db().runTransaction(async (tx: any) => {
+    const next: any = await runTx(async (tx: any) => {
       const snap = await tx.get(subRef);
       const cur = snap.exists ? snap.data() : {};
       if (cur.status !== 'active' || !cur.current_period_end || now <= cur.current_period_end) {
@@ -322,9 +354,8 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
       };
 
   // Read current month usage doc
-  const monthStr = getCurrentMonthIST();
-  const usageKey = `${uid}_${monthStr}`;
-  const usageSnap = await db().collection('usage').doc(usageKey).get();
+  const cycle = usageCycle(sub, now);
+  const usageSnap = await db().collection('usage').doc(usageDocId(uid, cycle.key)).get();
   const usageData: any = usageSnap.exists ? usageSnap.data() : {};
 
   const leadsUsed = usageData.leads_created || 0;
@@ -360,6 +391,7 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
       voiceAllowance: voiceAllowanceRemaining,
       voiceTopUp: voiceTopUpMinutes,
     },
+    usageCycle: { start: cycle.start, end: cycle.end },
     isFoundingPartner,
     foundingPartnerUntil: foundingPartnerUntil || (isDefaultAdmin ? now + 365 * 86400000 : null),
     pendingPlanId,
@@ -391,7 +423,7 @@ export async function applyPlanPayment(
   now = Date.now()
 ): Promise<{ current_period_start: number; current_period_end: number }> {
   const ref = db().collection('subscriptions').doc(uid);
-  return db().runTransaction(async (tx: any) => {
+  return runTx(async (tx: any) => {
     const snap = await tx.get(ref);
     const cur = snap.exists ? snap.data() : {};
     const stillActive = cur.status === 'active' && cur.current_period_end && cur.current_period_end > now;
@@ -470,101 +502,198 @@ export async function recordProcessedPayment(paymentId: string, data: any): Prom
 }
 
 /**
- * Atomically increments monthly leads_created counter on usage doc.
+ * Creates a lead AND counts it against the plan's lead limit in ONE transaction, so two simultaneous
+ * requests can never both slip under the limit.
+ *
+ *  mode 'agent'  - an agent adding their own lead: blocked at the limit with PlanLimitError
+ *                  (PLAN_REQUIRED without an active plan, LEAD_LIMIT at the cap).
+ *  mode 'public' - a buyer enquiry from the public catalogue: NEVER dropped. At the cap (or without
+ *                  an active plan) the lead is still saved, with automation paused, and is not
+ *                  counted against the cap.
  */
-export async function recordLeadCreated(uid: string): Promise<number> {
-  const monthStr = getCurrentMonthIST();
-  const usageKey = `${uid}_${monthStr}`;
-  const ref = db().collection('usage').doc(usageKey);
-  await ref.set(
-    {
-      agent_id: uid,
-      month: monthStr,
-      leads_created: FieldValue.increment(1),
-      updated_at: Date.now(),
-    },
-    { merge: true }
-  );
-  const snap = await ref.get();
-  return snap.data()?.leads_created || 1;
+export async function createLeadWithinLimit(
+  uid: string,
+  leadDoc: Record<string, any>,
+  mode: 'agent' | 'public',
+  options: { whenOverLimit?: Record<string, any> } = {},
+  now = Date.now()
+): Promise<{ id: string; automation_paused: boolean; overLimit: boolean; used: number; limit: number }> {
+  const subRef = db().collection('subscriptions').doc(uid);
+  const leadRef = db().collection('leads').doc();
+
+  return runTx(async (tx: any) => {
+    const subSnap = await tx.get(subRef);
+    const sub = subSnap.exists ? subSnap.data() : null;
+    const entitled = isEntitled(sub, now);
+    const limit = entitled ? PLANS[sub.plan_id as PlanId].limits.leadsPerMonth : 0;
+
+    const cycle = usageCycle(sub, now);
+    const usageRef = db().collection('usage').doc(usageDocId(uid, cycle.key));
+    const usageSnap = await tx.get(usageRef);
+    const used = usageSnap.exists ? usageSnap.data().leads_created || 0 : 0;
+
+    const overLimit = !entitled || used >= limit;
+
+    if (overLimit && mode === 'agent') {
+      if (!entitled) {
+        throw new PlanLimitError('PLAN_REQUIRED', 'An active plan is required to add leads.', 'upgrade', { limit: 0, used });
+      }
+      throw new PlanLimitError(
+        'LEAD_LIMIT',
+        `You have reached your plan's limit of ${limit} leads for this billing cycle. Upgrade your plan to add more.`,
+        'upgrade',
+        { limit, used }
+      );
+    }
+
+    tx.create(leadRef, {
+      ...leadDoc,
+      ...(overLimit ? options.whenOverLimit : {}),
+      automation_paused: overLimit || leadDoc.automation_paused === true,
+    });
+    if (!overLimit) {
+      tx.set(
+        usageRef,
+        {
+          agent_id: uid,
+          cycle_start: cycle.start,
+          leads_created: FieldValue.increment(1),
+          updated_at: now,
+        },
+        { merge: true }
+      );
+    }
+    return { id: leadRef.id, automation_paused: overLimit, overLimit, used: overLimit ? used : used + 1, limit };
+  });
 }
 
 /**
- * Atomically records voice minutes consumed, using allowance first then extra top-up pack.
+ * Strictly consumes AI voice minutes: the allowance for the current billing cycle first, then purchased
+ * top-up minutes. In ONE transaction it checks there are enough minutes and deducts them, so concurrent
+ * calls can't overspend. Throws VOICE_LIMIT (action: top_up) when there aren't enough.
  */
-export async function recordVoiceMinutes(uid: string, rawMinutes: number): Promise<{
-  consumedAllowance: number;
-  consumedTopUp: number;
-  remainingTotal: number;
-}> {
+export async function consumeVoiceMinutes(
+  uid: string,
+  rawMinutes: number,
+  now = Date.now()
+): Promise<{ consumedAllowance: number; consumedTopUp: number; remainingTotal: number }> {
   const minutes = Math.max(1, Math.ceil(rawMinutes));
-  const monthStr = getCurrentMonthIST();
-  const usageKey = `${uid}_${monthStr}`;
-  const usageRef = db().collection('usage').doc(usageKey);
   const subRef = db().collection('subscriptions').doc(uid);
 
-  return db().runTransaction(async (tx: any) => {
-    const [usageSnap, subSnap] = await Promise.all([tx.get(usageRef), tx.get(subRef)]);
-    const usage = usageSnap.exists ? usageSnap.data() : {};
-    const sub = subSnap.exists ? subSnap.data() : {};
+  return runTx(async (tx: any) => {
+    const subSnap = await tx.get(subRef);
+    const sub = subSnap.exists ? subSnap.data() : null;
+    if (!isEntitled(sub, now)) {
+      throw new PlanLimitError('PLAN_REQUIRED', 'An active plan is required to use AI Voice calling.', 'upgrade');
+    }
 
-    const planId = sub.plan_id as PlanId;
-    const planDef = sub.status === 'active' && planId && PLANS[planId] ? PLANS[planId] : null;
-    const monthlyLimit = planDef ? planDef.limits.voiceMinutesPerMonth : 0;
+    const cycle = usageCycle(sub, now);
+    const usageRef = db().collection('usage').doc(usageDocId(uid, cycle.key));
+    const usageSnap = await tx.get(usageRef);
+    const used = usageSnap.exists ? usageSnap.data().voice_minutes_used || 0 : 0;
 
-    const currentUsed = usage.voice_minutes_used || 0;
-    const currentTopUp = sub.voice_topup_minutes || 0;
-    const allowanceRemaining = Math.max(0, monthlyLimit - currentUsed);
+    const allowance = PLANS[sub.plan_id as PlanId].limits.voiceMinutesPerMonth;
+    const topUp = sub.voice_topup_minutes || 0;
+    const allowanceLeft = Math.max(0, allowance - used);
 
-    const consumedAllowance = Math.min(allowanceRemaining, minutes);
-    const consumedTopUp = Math.min(currentTopUp, minutes - consumedAllowance);
+    if (allowanceLeft + topUp < minutes) {
+      throw new PlanLimitError(
+        'VOICE_LIMIT',
+        `Not enough voice minutes: ${allowanceLeft + topUp} left, ${minutes} needed. Buy a top-up pack to continue.`,
+        'top_up',
+        { limit: allowance, used, remaining: allowanceLeft + topUp }
+      );
+    }
 
-    const newUsed = currentUsed + consumedAllowance;
-    const newTopUp = currentTopUp - consumedTopUp;
+    const fromAllowance = Math.min(allowanceLeft, minutes);
+    const fromTopUp = minutes - fromAllowance;
 
     tx.set(
       usageRef,
-      { agent_id: uid, month: monthStr, voice_minutes_used: newUsed, updated_at: Date.now() },
+      { agent_id: uid, cycle_start: cycle.start, voice_minutes_used: used + fromAllowance, updated_at: now },
       { merge: true }
     );
-    if (consumedTopUp > 0) {
-      tx.set(subRef, { voice_topup_minutes: newTopUp, updated_at: Date.now() }, { merge: true });
+    if (fromTopUp > 0) {
+      tx.set(subRef, { voice_topup_minutes: topUp - fromTopUp, updated_at: now }, { merge: true });
     }
-
     return {
-      consumedAllowance,
-      consumedTopUp,
-      remainingTotal: Math.max(0, monthlyLimit - newUsed) + newTopUp,
+      consumedAllowance: fromAllowance,
+      consumedTopUp: fromTopUp,
+      remainingTotal: allowanceLeft - fromAllowance + (topUp - fromTopUp),
     };
   });
 }
 
 /**
- * Middleware: Requires available voice call minutes before proceeding
+ * Records minutes a call ACTUALLY used (after it ends). Unlike consumeVoiceMinutes it never throws for
+ * lack of minutes - the call already happened - it takes what is available and floors at zero.
+ */
+export async function recordVoiceMinutes(
+  uid: string,
+  rawMinutes: number,
+  now = Date.now()
+): Promise<{ consumedAllowance: number; consumedTopUp: number; remainingTotal: number }> {
+  const minutes = Math.max(1, Math.ceil(rawMinutes));
+  const subRef = db().collection('subscriptions').doc(uid);
+
+  return runTx(async (tx: any) => {
+    const subSnap = await tx.get(subRef);
+    const sub = subSnap.exists ? subSnap.data() : {};
+    const planDef = isEntitled(sub, now) ? PLANS[sub.plan_id as PlanId] : null;
+    const allowance = planDef ? planDef.limits.voiceMinutesPerMonth : 0;
+
+    const cycle = usageCycle(sub, now);
+    const usageRef = db().collection('usage').doc(usageDocId(uid, cycle.key));
+    const usageSnap = await tx.get(usageRef);
+    const used = usageSnap.exists ? usageSnap.data().voice_minutes_used || 0 : 0;
+    const topUp = sub.voice_topup_minutes || 0;
+
+    const allowanceLeft = Math.max(0, allowance - used);
+    const consumedAllowance = Math.min(allowanceLeft, minutes);
+    const consumedTopUp = Math.min(topUp, minutes - consumedAllowance);
+
+    tx.set(
+      usageRef,
+      { agent_id: uid, cycle_start: cycle.start, voice_minutes_used: used + consumedAllowance, updated_at: now },
+      { merge: true }
+    );
+    if (consumedTopUp > 0) {
+      tx.set(subRef, { voice_topup_minutes: topUp - consumedTopUp, updated_at: now }, { merge: true });
+    }
+    return {
+      consumedAllowance,
+      consumedTopUp,
+      remainingTotal: allowanceLeft - consumedAllowance + (topUp - consumedTopUp),
+    };
+  });
+}
+
+/**
+ * Middleware: refuses to start a voice call when the user has no active plan or fewer than
+ * `estimatedMinutes` left. (Use consumeVoiceMinutes to actually reserve them without a race.)
  */
 export function requireVoiceMinutes(estimatedMinutes = 2) {
   return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
     }
-
     try {
       const planStatus = await getPlanStatus(req.user.uid, req.user.email);
       if (planStatus.status !== 'active') {
-        return res.status(402).json({
-          error: 'An active plan is required to use AI Voice calling.',
-          code: 'PLAN_REQUIRED',
-        });
+        return res.status(402).json(
+          new PlanLimitError('PLAN_REQUIRED', 'An active plan is required to use AI Voice calling.', 'upgrade').toJSON()
+        );
       }
-
       if (planStatus.remaining.voiceMinutes < estimatedMinutes) {
-        return res.status(402).json({
-          error: `Insufficient voice minutes. You have ${planStatus.remaining.voiceMinutes} minute(s) remaining. Please top up your voice allowance.`,
-          code: 'VOICE_LIMIT',
-          remaining: planStatus.remaining.voiceMinutes,
-        });
+        return res.status(402).json(
+          new PlanLimitError(
+            'VOICE_LIMIT',
+            `Insufficient voice minutes. You have ${planStatus.remaining.voiceMinutes} minute(s) remaining. Please top up your voice allowance.`,
+            'top_up',
+            { limit: planStatus.limits.voiceMinutesPerMonth, used: planStatus.usage.voiceMinutes, remaining: planStatus.remaining.voiceMinutes }
+          ).toJSON()
+        );
       }
-
       next();
     } catch (err: any) {
       // Fail closed: if usage can't be verified, don't hand out free minutes
@@ -575,11 +704,32 @@ export function requireVoiceMinutes(estimatedMinutes = 2) {
 }
 
 /**
- * Server-side lead document persistence helper
+ * Team seats. The plan's `users` limit (2 / 5 / 15) counts the owner plus invited members.
+ * There is no team-invite feature yet; when it exists, call assertSeatAvailable before adding a
+ * member. Members are expected in the `team_members` collection with `owner_id == owner uid`.
  */
-export async function createLeadDoc(leadDoc: any): Promise<{ id: string }> {
-  const docRef = await db().collection('leads').add(leadDoc);
-  return { id: docRef.id };
+export async function getSeatStatus(uid: string, now = Date.now()): Promise<{ limit: number; used: number; remaining: number }> {
+  const subSnap = await db().collection('subscriptions').doc(uid).get();
+  const sub = subSnap.exists ? subSnap.data() : null;
+  const limit = isEntitled(sub, now) ? PLANS[sub.plan_id as PlanId].limits.users : 0;
+  const members = await db().collection('team_members').where('owner_id', '==', uid).count().get();
+  const used = 1 + members.data().count; // the owner always takes a seat
+  return { limit, used, remaining: Math.max(0, limit - used) };
+}
+
+export async function assertSeatAvailable(uid: string): Promise<void> {
+  const seats = await getSeatStatus(uid);
+  if (seats.limit === 0) {
+    throw new PlanLimitError('PLAN_REQUIRED', 'An active plan is required to add team members.', 'upgrade');
+  }
+  if (seats.used >= seats.limit) {
+    throw new PlanLimitError(
+      'USER_LIMIT',
+      `Your plan includes ${seats.limit} users and all seats are taken. Upgrade your plan to add more.`,
+      'upgrade',
+      { limit: seats.limit, used: seats.used, remaining: 0 }
+    );
+  }
 }
 
 export async function getLeadDoc(leadId: string): Promise<{ exists: boolean; data: () => any }> {
