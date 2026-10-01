@@ -1,24 +1,25 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { Routes, Route, useParams } from 'react-router-dom';
 import { LandingPage } from './LandingPage';
-import { DashboardLayout } from './components/dashboard/DashboardLayout';
-import { DashboardHome } from './components/dashboard/DashboardHome';
-import { DashboardLeads } from './components/dashboard/DashboardLeads';
-import { DashboardLeadDetail } from './components/dashboard/DashboardLeadDetail';
-import { DashboardPipeline } from './components/dashboard/DashboardPipeline';
-import { DashboardProperties } from './components/dashboard/DashboardProperties';
-import { DashboardVisits } from './components/dashboard/DashboardVisits';
-import { DashboardTasks } from './components/dashboard/DashboardTasks';
-import { DashboardFinance } from './components/dashboard/DashboardFinance';
-import { DashboardWhatsApp } from './components/dashboard/DashboardWhatsApp';
-import { DashboardReports } from './components/dashboard/DashboardReports';
-import { DashboardSettings } from './components/dashboard/DashboardSettings';
-import { DashboardPricing } from './components/dashboard/DashboardPricing';
-import { SamruddhiAICompleteDashboard } from './components/dashboard/SamruddhiAICompleteDashboard';
-import { PricingPage } from './components/pricing/PricingPage';
-import { PublicCatalogue } from './components/PublicCatalogue';
 import { CITIES_DATA } from './data/cities';
 import { ToastProvider } from './components/dashboard/ui/Toast';
+
+const DashboardLayout = lazy(() => import('./components/dashboard/DashboardLayout').then((m) => ({ default: m.DashboardLayout })));
+const DashboardHome = lazy(() => import('./components/dashboard/DashboardHome').then((m) => ({ default: m.DashboardHome })));
+const DashboardLeads = lazy(() => import('./components/dashboard/DashboardLeads').then((m) => ({ default: m.DashboardLeads })));
+const DashboardLeadDetail = lazy(() => import('./components/dashboard/DashboardLeadDetail').then((m) => ({ default: m.DashboardLeadDetail })));
+const DashboardPipeline = lazy(() => import('./components/dashboard/DashboardPipeline').then((m) => ({ default: m.DashboardPipeline })));
+const DashboardProperties = lazy(() => import('./components/dashboard/DashboardProperties').then((m) => ({ default: m.DashboardProperties })));
+const DashboardVisits = lazy(() => import('./components/dashboard/DashboardVisits').then((m) => ({ default: m.DashboardVisits })));
+const DashboardTasks = lazy(() => import('./components/dashboard/DashboardTasks').then((m) => ({ default: m.DashboardTasks })));
+const DashboardFinance = lazy(() => import('./components/dashboard/DashboardFinance').then((m) => ({ default: m.DashboardFinance })));
+const DashboardWhatsApp = lazy(() => import('./components/dashboard/DashboardWhatsApp').then((m) => ({ default: m.DashboardWhatsApp })));
+const DashboardReports = lazy(() => import('./components/dashboard/DashboardReports').then((m) => ({ default: m.DashboardReports })));
+const DashboardSettings = lazy(() => import('./components/dashboard/DashboardSettings').then((m) => ({ default: m.DashboardSettings })));
+const DashboardPricing = lazy(() => import('./components/dashboard/DashboardPricing').then((m) => ({ default: m.DashboardPricing })));
+const SamruddhiAICompleteDashboard = lazy(() => import('./components/dashboard/SamruddhiAICompleteDashboard').then((m) => ({ default: m.SamruddhiAICompleteDashboard })));
+const PricingPage = lazy(() => import('./components/pricing/PricingPage').then((m) => ({ default: m.PricingPage })));
+const PublicCatalogue = lazy(() => import('./components/PublicCatalogue').then((m) => ({ default: m.PublicCatalogue })));
 
 function CityRoute() {
   const { citySlug } = useParams();
@@ -42,6 +43,7 @@ function CityRoute() {
 export default function App() {
   return (
     <ToastProvider>
+      <Suspense fallback={<div className="min-h-screen bg-[#04100c]" aria-busy="true" />}>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/pricing" element={<PricingPage />} />
@@ -64,6 +66,7 @@ export default function App() {
         </Route>
         <Route path="/:citySlug" element={<CityRoute />} />
       </Routes>
+      </Suspense>
     </ToastProvider>
   );
 }

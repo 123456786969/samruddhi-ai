@@ -1,4 +1,4 @@
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { collection, addDoc, getDocs, query, where, getDoc, doc } from 'firebase/firestore';
 import { WhatsAppTemplate, WhatsAppLog, WhatsAppAutomationConfig } from '../types';
 
@@ -141,11 +141,13 @@ export interface SendWhatsAppResponse {
  */
 export async function sendWhatsAppMessage(params: SendWhatsAppParams): Promise<SendWhatsAppResponse> {
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth.currentUser) {
+      headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+    }
     const response = await fetch('/api/whatsapp/send', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         phone_number: params.phone_number,
         message: params.message,

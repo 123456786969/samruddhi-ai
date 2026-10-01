@@ -129,12 +129,16 @@ service cloud.firestore {
     }
 
     // 7. Subscriptions and Usage
+    // Billing state is written exclusively by the server (Admin SDK bypasses rules).
+    // Clients may only read their own subscription and usage.
     match /subscriptions/{userId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false;
     }
 
     match /usage/{usageId} {
-      allow read, write: if isSignedIn() && (resource == null || resource.data.agent_id == request.auth.uid);
+      allow read: if isSignedIn() && resource != null && resource.data.agent_id == request.auth.uid;
+      allow write: if false;
     }
   }
 }

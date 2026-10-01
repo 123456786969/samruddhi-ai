@@ -38,14 +38,56 @@ import {
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
-  const PORT = 3000;
+  const IS_PROD = process.env.NODE_ENV === 'production';
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+
+  // Keep the raw body so Razorpay webhook signatures can be verified byte-for-byte
+  app.use(express.json({
+    limit: '100kb',
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }));
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+
+  // Minimal in-memory fixed-window rate limiter (per client IP + route key)
+  const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of rateBuckets) if (v.resetAt <= now) rateBuckets.delete(k);
+  }, 60_000).unref();
+  const rateLimit = (key: string, max: number, windowMs: number) =>
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const id = `${key}:${req.ip}`;
+      const now = Date.now();
+      const bucket = rateBuckets.get(id);
+      if (!bucket || bucket.resetAt <= now) {
+        rateBuckets.set(id, { count: 1, resetAt: now + windowMs });
+        return next();
+      }
+      if (++bucket.count > max) {
+        res.setHeader('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+        return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+      }
+      next();
+    };
+
+  const escapeHtml = (v: unknown) =>
+    String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  const PORT = Number(process.env.PORT) || 3000;
 
   interface OtpRecord {
     otp: string;
     expiresAt: number;
     generatedAt: number;
     verifiedAt?: number;
+    attempts?: number;
   }
 
   const OTP_FILE = path.join(process.cwd(), '.otp_store.json');
@@ -85,7 +127,7 @@ async function startServer() {
   const otpStore = loadOtpStore();
 
   // OTP Sending Route
-  app.post('/api/send-otp', async (req, res) => {
+  app.post('/api/send-otp', rateLimit('send-otp', 10, 10 * 60 * 1000), async (req, res) => {
     try {
       const rawEmail = req.body?.email;
       if (!rawEmail) {
@@ -93,6 +135,14 @@ async function startServer() {
       }
 
       const email = rawEmail.toString().trim().toLowerCase();
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ error: 'A valid email address is required' });
+      }
+
+      const previous = otpStore.get(email);
+      if (previous && Date.now() - previous.generatedAt < 30 * 1000) {
+        return res.status(429).json({ error: 'Please wait 30 seconds before requesting another code.' });
+      }
 
       // Generate a fresh, cryptographically secure randomized 6-digit OTP on EVERY request
       const otp = crypto.randomInt(100000, 1000000).toString();
@@ -100,13 +150,19 @@ async function startServer() {
       const refId = crypto.randomBytes(3).toString('hex').toUpperCase();
 
       // Store in memory & persist: code is valid for 30 minutes, reset previous verified state
-      otpStore.set(email, { otp, expiresAt: now + 30 * 60 * 1000, generatedAt: now });
+      otpStore.set(email, { otp, expiresAt: now + 10 * 60 * 1000, generatedAt: now, attempts: 0 });
       saveOtpStore(otpStore);
 
       const smtpEmail = process.env.SMTP_EMAIL;
       const smtpPassword = process.env.SMTP_PASSWORD;
 
       if (!smtpEmail || !smtpPassword) {
+        if (IS_PROD) {
+          otpStore.delete(email);
+          saveOtpStore(otpStore);
+          console.error('[OTP Server] SMTP credentials are not configured; cannot deliver OTP in production.');
+          return res.status(503).json({ error: 'Email delivery is not configured. Please contact support.' });
+        }
         console.warn(`[OTP Sim] SMTP credentials not set. Simulated randomized OTP for ${email} is: ${otp}`);
         return res.json({ success: true, simulated: true, devOtp: otp });
       }
@@ -122,12 +178,12 @@ async function startServer() {
 
         const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        console.log(`[OTP Server] Attempting to send dynamic randomized OTP email (${otp}) to ${email} (Ref: ${refId})...`);
+        console.log(`[OTP Server] Sending OTP email to ${email} (Ref: ${refId})...`);
         const info = await transporter.sendMail({
           from: `"Samruddhi AI Security" <${smtpEmail}>`,
           to: email,
           subject: `Your Login Verification Code: ${otp} - Samruddhi AI [#${refId}]`,
-          text: `Your login verification code is: ${otp}\n\nGenerated at: ${timeStr} IST\nReference ID: REF-${refId}\n\nThis randomized code is single-use and will expire in 30 minutes. If you did not request this login code, you can safely ignore this email.`,
+          text: `Your login verification code is: ${otp}\n\nGenerated at: ${timeStr} IST\nReference ID: REF-${refId}\n\nThis randomized code is single-use and will expire in 10 minutes. If you did not request this login code, you can safely ignore this email.`,
           html: `
             <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px 24px; background-color: #04100c; color: #f1f5f9; border-radius: 16px; border: 1px solid #134e4a;">
               <div style="text-align: center; margin-bottom: 24px;">
@@ -146,7 +202,7 @@ async function startServer() {
                   ${otp}
                 </div>
                 <div style="color: #6ee7b7; font-size: 12px; font-weight: 600; margin-top: 8px;">
-                  Expires in 30 minutes • Never share this code
+                  Expires in 10 minutes • Never share this code
                 </div>
               </div>
 
@@ -154,7 +210,7 @@ async function startServer() {
                 <table style="width: 100%; border-collapse: collapse; font-size: 12px; color: #cbd5e1;">
                   <tr>
                     <td style="color: #5eead4; font-weight: 600; padding: 4px 0;">Email Account:</td>
-                    <td style="text-align: right; padding: 4px 0; font-family: monospace;">${email}</td>
+                    <td style="text-align: right; padding: 4px 0; font-family: monospace;">${escapeHtml(email)}</td>
                   </tr>
                   <tr>
                     <td style="color: #5eead4; font-weight: 600; padding: 4px 0;">Generated At:</td>
@@ -176,17 +232,19 @@ async function startServer() {
         console.log('[OTP Server] Dynamic email delivered successfully. Message ID:', info.messageId);
         return res.json({ success: true, simulated: false });
       } catch (mailErr: any) {
-        console.warn('[OTP Server] Mail delivery notice (falling back to screen code so auth succeeds):', mailErr.message);
-        return res.json({ success: true, simulated: true, devOtp: otp, note: 'Email delivery notice: Use code on screen.' });
+        console.error('[OTP Server] Mail delivery failed:', mailErr.message);
+        otpStore.delete(email);
+        saveOtpStore(otpStore);
+        return res.status(502).json({ error: 'Could not send the verification email. Please try again.' });
       }
     } catch (err: any) {
       console.error('[OTP Server] Final Error sending OTP:', err);
-      res.status(500).json({ error: err.message || 'Failed to send OTP' });
+      res.status(500).json({ error: 'Failed to send OTP' });
     }
   });
 
   // OTP Verification Route
-  app.post('/api/verify-otp', (req, res) => {
+  app.post('/api/verify-otp', rateLimit('verify-otp', 30, 10 * 60 * 1000), (req, res) => {
     try {
       const rawEmail = req.body?.email;
       const rawOtp = req.body?.otp;
@@ -196,9 +254,6 @@ async function startServer() {
       
       const email = rawEmail.toString().trim().toLowerCase();
       const enteredOtp = rawOtp.toString().trim();
-      const simulatedCode = req.body?.simulatedCode ? req.body.simulatedCode.toString().trim() : null;
-
-      const smtpConfigured = Boolean(process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD);
 
       // Check in-memory store or reload from disk cache
       let record = otpStore.get(email);
@@ -210,18 +265,7 @@ async function startServer() {
         }
       }
 
-      // If simulated fallback was triggered on client in unconfigured environment:
-      if (!smtpConfigured && simulatedCode && enteredOtp === simulatedCode) {
-        otpStore.delete(email);
-        saveOtpStore(otpStore);
-        return res.json({ success: true, simulated: true });
-      }
-
       if (!record) {
-        if (!smtpConfigured && enteredOtp.length === 6) {
-          console.log(`[OTP Server] Preview mode (SMTP unconfigured). Accepting entered 6-digit code for ${email}: ${enteredOtp}`);
-          return res.json({ success: true, simulated: true });
-        }
         return res.status(400).json({ error: 'No active verification code found for this email. Please click Resend Code to receive a fresh code.' });
       }
 
@@ -232,7 +276,17 @@ async function startServer() {
       }
 
       // Compare entered code with the randomized code stored
-      if (record.otp === enteredOtp) {
+      record.attempts = (record.attempts || 0) + 1;
+      if (record.attempts > 5) {
+        otpStore.delete(email);
+        saveOtpStore(otpStore);
+        return res.status(429).json({ error: 'Too many incorrect attempts. Please request a new code.' });
+      }
+      saveOtpStore(otpStore);
+
+      const a = Buffer.from(record.otp);
+      const b = Buffer.from(enteredOtp);
+      if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
         // Single-use: delete after successful verification
         otpStore.delete(email);
         saveOtpStore(otpStore);
@@ -275,11 +329,12 @@ async function startServer() {
     details?: any;
   }) {
     const adminEmail = (process.env.ADMIN_NOTIFICATION_EMAIL || process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL).trim().toLowerCase();
-    const userEmail = (data.email || '').trim().toLowerCase();
-    const userName = (data.name || 'Real Estate Partner').trim();
-    const companyName = (data.companyName || 'Channel Partner / Agency').trim();
-    const phone = (data.phone || 'N/A').trim();
-    const type = data.type || 'login';
+    const userEmail = String(data.email || '').trim().toLowerCase().slice(0, 254);
+    const userName = String(data.name || 'Real Estate Partner').trim().slice(0, 200);
+    const companyName = String(data.companyName || 'Channel Partner / Agency').trim().slice(0, 200);
+    const phone = String(data.phone || 'N/A').trim().slice(0, 40);
+    const ALLOWED_TYPES = ['login', 'onboarding', 'demo_booking', 'checkout'] as const;
+    const type = (ALLOWED_TYPES as readonly string[]).includes(data.type) ? data.type : 'login';
 
     const typeLabel = 
       type === 'onboarding' ? 'New Broker / Agency Onboarded' :
@@ -338,21 +393,21 @@ async function startServer() {
               <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px; background-color: #020d0a; border-radius: 12px; border: 1px solid #134e4a;">
                 <tr>
                   <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #99f6e4; font-size: 13px; font-weight: 600; width: 35%;">User Name</td>
-                  <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #ffffff; font-size: 14px; font-weight: 700;">${userName}</td>
+                  <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #ffffff; font-size: 14px; font-weight: 700;">${escapeHtml(userName)}</td>
                 </tr>
                 <tr>
                   <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #99f6e4; font-size: 13px; font-weight: 600;">Gmail / Email</td>
                   <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #fbbf24; font-size: 14px; font-weight: 700;">
-                    <a href="mailto:${userEmail}" style="color: #fbbf24; text-decoration: underline;">${userEmail}</a>
+                    <a href="mailto:${escapeHtml(userEmail)}" style="color: #fbbf24; text-decoration: underline;">${escapeHtml(userEmail)}</a>
                   </td>
                 </tr>
                 <tr>
                   <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #99f6e4; font-size: 13px; font-weight: 600;">Company / Agency</td>
-                  <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #ffffff; font-size: 14px; font-weight: 600;">${companyName}</td>
+                  <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #ffffff; font-size: 14px; font-weight: 600;">${escapeHtml(companyName)}</td>
                 </tr>
                 <tr>
                   <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #99f6e4; font-size: 13px; font-weight: 600;">Phone Number</td>
-                  <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #ffffff; font-size: 14px;">${phone}</td>
+                  <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #ffffff; font-size: 14px;">${escapeHtml(phone)}</td>
                 </tr>
                 <tr>
                   <td style="padding: 14px 16px; border-bottom: 1px solid #134e4a; color: #99f6e4; font-size: 13px; font-weight: 600;">Activity Time</td>
@@ -361,21 +416,21 @@ async function startServer() {
                 ${data.details ? `
                 <tr>
                   <td style="padding: 14px 16px; color: #99f6e4; font-size: 13px; font-weight: 600;">Details</td>
-                  <td style="padding: 14px 16px; color: #cbd5e1; font-size: 12px; font-family: monospace;">${typeof data.details === 'object' ? JSON.stringify(data.details, null, 2) : data.details}</td>
+                  <td style="padding: 14px 16px; color: #cbd5e1; font-size: 12px; font-family: monospace;">${escapeHtml(typeof data.details === 'object' ? JSON.stringify(data.details, null, 2) : data.details)}</td>
                 </tr>
                 ` : ''}
               </table>
 
               <div style="text-align: center; margin: 24px 0 12px 0;">
                 <a href="${mailtoLink}" style="display: inline-block; background-color: #fbbf24; color: #020d0a; font-weight: 800; font-size: 14px; padding: 14px 28px; border-radius: 10px; text-decoration: none; box-shadow: 0 4px 14px rgba(251, 191, 36, 0.3);">
-                  ✉️ Reply to ${userEmail} via Gmail
+                  ✉️ Reply to ${escapeHtml(userEmail)} via Gmail
                 </a>
                 <p style="margin-top: 12px; font-size: 12px; color: #99f6e4;">Click above to immediately email this user with plan discussions & enterprise offerings.</p>
               </div>
             </div>
 
             <div style="background-color: #020d0a; padding: 16px 24px; border-top: 1px solid #134e4a; text-align: center; font-size: 12px; color: #64748b;">
-              Samruddhi AI • Real Estate Lead & Voice AI Engine • Sent to Administrator: ${adminEmail}
+              Samruddhi AI • Real Estate Lead & Voice AI Engine • Sent to Administrator: ${escapeHtml(adminEmail)}
             </div>
           </div>
         `;
@@ -421,7 +476,7 @@ async function startServer() {
   }
 
   // Admin Notification API Endpoint
-  app.post('/api/admin/notify', async (req, res) => {
+  app.post('/api/admin/notify', rateLimit('admin-notify', 20, 10 * 60 * 1000), async (req, res) => {
     try {
       const { type, email, name, companyName, phone, details } = req.body || {};
       if (!email) {
@@ -445,7 +500,7 @@ async function startServer() {
   });
 
   // Admin Notifications Retrieval Endpoint
-  app.get('/api/admin/notifications', (req, res) => {
+  app.get('/api/admin/notifications', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
     const adminEmail = (process.env.ADMIN_NOTIFICATION_EMAIL || process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL).trim().toLowerCase();
     res.json({
       adminEmail,
@@ -498,58 +553,41 @@ async function startServer() {
   }
 
   // WhatsApp Messaging Endpoint (Meta WhatsApp Cloud API with Usage & Plan Enforcement)
-  app.post('/api/whatsapp/send', async (req, res) => {
+  app.post('/api/whatsapp/send', requireAuth, rateLimit('whatsapp-send', 60, 60 * 1000), async (req: AuthenticatedRequest, res) => {
     try {
-      const { phone_number, message, template_name, lead_id, agent_id } = req.body;
+      const { phone_number, message, template_name, lead_id } = req.body;
 
-      if (!message || typeof message !== 'string' || !message.trim()) {
+      if (!message || typeof message !== 'string' || !message.trim() || message.length > 4096) {
         return res.status(400).json({
           success: false,
-          error: 'Message content is required and cannot be empty.',
+          error: 'Message content is required and must be at most 4096 characters.',
           status: 'failed'
         });
       }
-
-      // Check authentication or target agent
-      let targetUid: string | null = agent_id || null;
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        try {
-          const token = authHeader.split('Bearer ')[1].trim();
-          if (adminAuth) {
-            try {
-              const decoded = await adminAuth.verifyIdToken(token);
-              if (decoded?.uid) targetUid = decoded.uid;
-            } catch {}
-          }
-          if (!targetUid) {
-            const parts = token.split('.');
-            if (parts.length === 3) {
-              const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-              if (payload?.user_id || payload?.sub) targetUid = payload.user_id || payload.sub;
-            }
-          }
-        } catch (e) {
-          // Token invalid
-        }
+      if (template_name !== undefined && (typeof template_name !== 'string' || !/^[a-z0-9_]{1,512}$/.test(template_name))) {
+        return res.status(400).json({ success: false, error: 'Invalid template name.', status: 'failed' });
       }
 
+      // The sending agent is always the authenticated user (never a client-supplied id)
+      const targetUid: string = req.user!.uid;
+
       // If we have a target agent, enforce plan status
-      if (targetUid) {
-        const planStatus = await getPlanStatus(targetUid);
-        if (planStatus.status !== 'active') {
-          return res.status(402).json({
-            success: false,
-            error: 'No active plan. An active subscription is required to run WhatsApp automation.',
-            code: 'PLAN_REQUIRED',
-            status: 'failed',
-          });
-        }
+      const planStatus = await getPlanStatus(targetUid);
+      if (planStatus.status !== 'active') {
+        return res.status(402).json({
+          success: false,
+          error: 'No active plan. An active subscription is required to run WhatsApp automation.',
+          code: 'PLAN_REQUIRED',
+          status: 'failed',
+        });
       }
 
       // Check if lead has automation paused due to exceeding monthly lead limit
       if (lead_id) {
         const leadSnap = await getLeadDoc(lead_id);
+        if (leadSnap.exists && leadSnap.data()?.agent_id !== targetUid) {
+          return res.status(403).json({ success: false, error: 'You do not own this lead.', status: 'failed' });
+        }
         if (leadSnap.exists && leadSnap.data()?.automation_paused === true) {
           return res.status(403).json({
             success: false,
@@ -698,7 +736,7 @@ async function startServer() {
   });
 
   // WhatsApp Status / Diagnostics Route
-  app.get('/api/whatsapp/status', (req, res) => {
+  app.get('/api/whatsapp/status', requireAuth, (req: AuthenticatedRequest, res) => {
     const hasToken = !!(process.env.WHATSAPP_API_TOKEN || process.env.META_ACCESS_TOKEN);
     const hasPhoneId = !!process.env.WHATSAPP_PHONE_NUMBER_ID;
     const hasWabaId = !!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
@@ -716,7 +754,7 @@ async function startServer() {
   });
 
   // WhatsApp Recent Server Logs Route
-  app.get('/api/whatsapp/logs', (req, res) => {
+  app.get('/api/whatsapp/logs', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
     res.json({
       logs: whatsappServerLogs.slice(0, 50)
     });
@@ -726,7 +764,8 @@ async function startServer() {
   // SAMRUDDHI AI: BILLING, PRICING & USAGE LIMIT ENFORCEMENT
   // -------------------------------------------------------------
   const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || 'rzp_test_samruddhi';
-  const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'secret_samruddhi_test';
+  // No hardcoded fallback secret in production: an unset secret must never validate signatures
+  const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || (IS_PROD ? '' : 'secret_samruddhi_test');
 
   let razorpayInstance: Razorpay | null = null;
   if (
@@ -799,6 +838,10 @@ async function startServer() {
       const amountPaise = total * 100;
       let orderId = `order_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
+      if (!razorpayInstance && IS_PROD) {
+        return res.status(503).json({ error: 'Payments are not configured. Please contact support.' });
+      }
+
       if (razorpayInstance) {
         try {
           const rzpOrder = await razorpayInstance.orders.create({
@@ -816,7 +859,8 @@ async function startServer() {
           });
           orderId = rzpOrder.id;
         } catch (rErr: any) {
-          console.warn('[Razorpay API] Order creation notice:', rErr.message);
+          console.error('[Razorpay API] Order creation failed:', rErr.message);
+          return res.status(502).json({ error: 'Could not create the payment order. Please try again.' });
         }
       }
 
@@ -849,30 +893,56 @@ async function startServer() {
   app.post('/api/billing/verify-payment', requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
       const uid = req.user!.uid;
-      const {
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
-        type = 'plan',
-        plan_id,
-        billing_cycle = 'monthly',
-        pack_id,
-      } = req.body;
+      const body = req.body || {};
+      const razorpay_order_id = body.razorpay_order_id;
+      const razorpay_payment_id = body.razorpay_payment_id;
+      const razorpay_signature = body.razorpay_signature;
+      let type = body.type || 'plan';
+      let plan_id = body.plan_id;
+      let billing_cycle = body.billing_cycle || 'monthly';
+      let pack_id = body.pack_id;
 
-      if (!razorpay_payment_id) {
+      if (!razorpay_payment_id || typeof razorpay_payment_id !== 'string') {
         return res.status(400).json({ error: 'Payment ID is required.' });
       }
 
-      // Check payment signature if live keys configured and not test simulated
-      if (razorpayInstance && razorpay_signature && !razorpay_payment_id.startsWith('sim_pay_')) {
-        const generatedSignature = crypto
-          .createHmac('sha256', RAZORPAY_KEY_SECRET)
-          .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-          .digest('hex');
-
-        if (generatedSignature !== razorpay_signature) {
+      if (razorpayInstance) {
+        // Live mode: signature is mandatory, simulated payments are never accepted
+        if (!razorpay_order_id || typeof razorpay_signature !== 'string' || razorpay_payment_id.startsWith('sim_pay_')) {
           return res.status(400).json({ error: 'Payment signature verification failed.' });
         }
+        const expected = Buffer.from(
+          crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex')
+        );
+        const given = Buffer.from(razorpay_signature);
+        if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {
+          return res.status(400).json({ error: 'Payment signature verification failed.' });
+        }
+
+        // Trust only the server-side order: it must belong to this user and be fully paid.
+        // What is credited comes from the order notes, not from client-supplied fields.
+        const order: any = await razorpayInstance.orders.fetch(razorpay_order_id);
+        if (!order || order.notes?.uid !== uid) {
+          return res.status(403).json({ error: 'This payment does not belong to your account.' });
+        }
+        if (order.status !== 'paid') {
+          return res.status(402).json({ error: 'Payment has not been completed.' });
+        }
+        type = order.notes.type || 'plan';
+        plan_id = order.notes.plan_id || undefined;
+        billing_cycle = order.notes.billing_cycle || 'monthly';
+        pack_id = order.notes.pack_id || undefined;
+      } else if (IS_PROD) {
+        return res.status(503).json({ error: 'Payments are not configured. Please contact support.' });
+      } else if (!razorpay_payment_id.startsWith('sim_pay_')) {
+        return res.status(400).json({ error: 'Payment signature verification failed.' });
+      }
+
+      if (type === 'plan' && (!plan_id || !PLANS[plan_id as PlanId])) {
+        return res.status(400).json({ error: 'Invalid plan_id.' });
+      }
+      if (type !== 'plan' && type !== 'voice_topup') {
+        return res.status(400).json({ error: 'Invalid payment type.' });
       }
 
       // Idempotency check: don't apply the same payment twice
@@ -936,12 +1006,15 @@ async function startServer() {
   app.post('/api/billing/webhook', async (req, res) => {
     try {
       const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+      if (!webhookSecret && IS_PROD) {
+        return res.status(503).json({ error: 'Webhook is not configured' });
+      }
       if (webhookSecret) {
-        const webhookSignature = req.headers['x-razorpay-signature'] as string;
-        const shasum = crypto.createHmac('sha256', webhookSecret);
-        shasum.update(JSON.stringify(req.body));
-        const digest = shasum.digest('hex');
-        if (digest !== webhookSignature) {
+        const webhookSignature = String(req.headers['x-razorpay-signature'] || '');
+        const rawBody: Buffer = (req as any).rawBody || Buffer.from(JSON.stringify(req.body));
+        const digest = Buffer.from(crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex'));
+        const given = Buffer.from(webhookSignature);
+        if (digest.length !== given.length || !crypto.timingSafeEqual(digest, given)) {
           return res.status(400).json({ error: 'Invalid webhook signature' });
         }
       }
@@ -1108,11 +1181,14 @@ async function startServer() {
   });
 
   // 5c. Public Lead & Visit Capture for Property Catalogue
-  app.post('/api/public/leads', async (req, res) => {
+  app.post('/api/public/leads', rateLimit('public-leads', 10, 10 * 60 * 1000), async (req, res) => {
     try {
-      const { agent_id, name, phone, email, property_id, property_title, requested_time } = req.body;
+      const { agent_id, name, phone, email, property_id, property_title, requested_time } = req.body || {};
       if (!agent_id || !name || !phone) {
         return res.status(400).json({ error: 'agent_id, name, and phone are required.' });
+      }
+      if ([agent_id, name, phone].some((v) => typeof v !== 'string') || agent_id.length > 128 || /[\/]/.test(agent_id)) {
+        return res.status(400).json({ error: 'Invalid lead details.' });
       }
 
       const planStatus = await getPlanStatus(agent_id);
@@ -1140,9 +1216,9 @@ async function startServer() {
         const visitDoc = {
           agent_id,
           lead_id: leadRef.id,
-          property_id,
-          property_title: property_title || 'Featured Property',
-          requested_time: requested_time || 'Weekend Preferred',
+          property_id: String(property_id).slice(0, 128),
+          property_title: String(property_title || 'Featured Property').slice(0, 200),
+          requested_time: String(requested_time || 'Weekend Preferred').slice(0, 100),
           status: 'pending',
           created_at: Date.now(),
         };
@@ -1159,7 +1235,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error('[POST /api/public/leads] Error:', err);
-      return res.status(500).json({ error: err.message || 'Failed to capture lead' });
+      return res.status(500).json({ error: 'Failed to capture lead' });
     }
   });
 
@@ -1247,9 +1323,11 @@ async function startServer() {
   });
 
   // Samruddhi AI Chat Route for WhatsApp B2B & B2C AI Assistant
-  app.post('/api/ai-assistant', async (req, res) => {
+  app.post('/api/ai-assistant', rateLimit('ai-assistant', 30, 10 * 60 * 1000), async (req, res) => {
     try {
-      const { messages, mode, extractedData } = req.body;
+      const { messages: rawMessages, mode, extractedData } = req.body || {};
+      // Bound the history sent to the model to cap cost and abuse
+      const messages = Array.isArray(rawMessages) ? rawMessages.slice(-20) : [];
       const apiKey = process.env.GEMINI_API_KEY;
 
       if (!apiKey) {
@@ -1306,7 +1384,7 @@ Keep your answers concise, professional, and conversational. Use markdown for re
 
 
       const formattedHistory = (messages || []).map((m: any) => 
-        `${m.sender === 'user' ? 'User' : 'Assistant'}: ${m.text}`
+        `${m?.sender === 'user' ? 'User' : 'Assistant'}: ${String(m?.text ?? '').slice(0, 2000)}`
       ).join('\n');
 
       const response = await ai.models.generateContent({
@@ -1394,10 +1472,11 @@ Keep your answers concise, professional, and conversational. Use markdown for re
   }
 
   // High-Fidelity Voice AI TTS Route with Cooldown & Multi-Tier Fallback
-  app.get('/api/tts', async (req, res) => {
+  app.get('/api/tts', rateLimit('tts', 60, 10 * 60 * 1000), async (req, res) => {
     try {
       const { text, lang, sender } = req.query;
       if (!text) return res.status(400).send('Missing text parameter');
+      if (String(text).length > 1000) return res.status(413).send('Text too long');
       
       const rawText = String(text).trim();
       const isBot = sender !== 'user';
@@ -1538,4 +1617,7 @@ Keep your answers concise, professional, and conversational. Use markdown for re
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CITIES_DATA } from './data/cities';
 import { CityTemplate } from './components/CityTemplate';
 import { LuxuryNavbar } from './components/luxury/LuxuryNavbar';
 import { LuxuryHero } from './components/luxury/LuxuryHero';
 import { OmnichannelStudioDemo } from './components/luxury/OmnichannelStudioDemo';
-import { Globe3DCanvas } from './components/luxury/Globe3DCanvas';
+const Globe3DCanvas = lazy(() => import('./components/luxury/Globe3DCanvas').then((m) => ({ default: m.Globe3DCanvas })));
 import { FeatureSliderCarousel } from './components/luxury/FeatureSliderCarousel';
 import { EngineRoomSpecs } from './components/luxury/EngineRoomSpecs';
 import { RoiCalculator } from './components/RoiCalculator';
@@ -97,7 +97,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ citySlug }) => {
       {showSplash && <SplashScreen onComplete={() => setShowSplash(false)} />}
 
       {/* 3D WebGL Scroll-to-Zoom Globe & Inward Particle Engine (60fps) */}
-      <Globe3DCanvas />
+      <Suspense fallback={null}>
+        <Globe3DCanvas />
+      </Suspense>
 
       {/* Dynamic Slide & Shift Ambient Canvas Background Engine */}
       <div 

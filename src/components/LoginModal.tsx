@@ -190,8 +190,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           email: email.trim().toLowerCase(), 
-          otp: cleanOtp,
-          simulatedCode: simulatedOtp || undefined
+          otp: cleanOtp
         })
       });
 

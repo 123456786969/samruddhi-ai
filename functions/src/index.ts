@@ -4,6 +4,9 @@ import * as nodemailer from 'nodemailer';
 
 admin.initializeApp();
 
+const esc = (v: unknown) =>
+  String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+
 // Configure your SMTP credentials in Firebase environment variables:
 // firebase functions:config:set smtp.email="your-email@gmail.com" smtp.password="your-app-password"
 const mailTransport = nodemailer.createTransport({
@@ -56,18 +59,18 @@ export const sendSiteVisitNotification = functions.firestore
       const mailOptions = {
         from: '"Samruddhi AI" <noreply@samruddhiai.com>',
         to: agentEmail,
-        subject: `New Site Visit Request from ${leadName}`,
+        subject: `New Site Visit Request from ${String(leadName).replace(/[\r\n]+/g, " ")}`,
         text: `Hello ${agentData?.name || 'Agent'},\n\nYou have a new site visit request!\n\nLead Name: ${leadName}\nPhone: ${leadPhone}\nProperty: ${visitData.property_title || 'Not specified'}\nRequested Time: ${visitData.requested_time || 'TBD'}\n\nPlease check your dashboard for more details.\n\nBest,\nSamruddhi AI System`,
         html: `
-          <div style="font-family: sans-serif; max-w: 600px; margin: 0 auto;">
+          <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #0d9488;">New Site Visit Request!</h2>
-            <p>Hello ${agentData?.name || 'Agent'},</p>
+            <p>Hello ${esc(agentData?.name || 'Agent')},</p>
             <p>You have a new site visit request.</p>
             <div style="background-color: #f3f4f6; padding: 16px; border-radius: 8px; margin: 16px 0;">
-              <p style="margin: 4px 0;"><strong>Lead Name:</strong> ${leadName}</p>
-              <p style="margin: 4px 0;"><strong>Phone:</strong> ${leadPhone}</p>
-              <p style="margin: 4px 0;"><strong>Property:</strong> ${visitData.property_title || 'Not specified'}</p>
-              <p style="margin: 4px 0;"><strong>Requested Time:</strong> ${visitData.requested_time || 'TBD'}</p>
+              <p style="margin: 4px 0;"><strong>Lead Name:</strong> ${esc(leadName)}</p>
+              <p style="margin: 4px 0;"><strong>Phone:</strong> ${esc(leadPhone)}</p>
+              <p style="margin: 4px 0;"><strong>Property:</strong> ${esc(visitData.property_title || 'Not specified')}</p>
+              <p style="margin: 4px 0;"><strong>Requested Time:</strong> ${esc(visitData.requested_time || 'TBD')}</p>
             </div>
             <p>Please check your dashboard to confirm the exact time and property details with the lead.</p>
             <p style="color: #6b7280; font-size: 14px;">Best regards,<br>Samruddhi AI System</p>

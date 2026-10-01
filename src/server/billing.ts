@@ -112,8 +112,41 @@ export interface AuthenticatedRequest extends Request {
 }
 
 /**
- * requireAuth middleware: Verifies Firebase ID token in Authorization header.
- * Falls back safely to parsing JWT claims if server verification encounters ambient network issues.
+ * Verifies a Firebase ID token and returns its decoded claims, or null when it
+ * is missing/invalid. Signatures are always verified. Decoding without
+ * verification is only possible when ALLOW_UNVERIFIED_TOKENS=true outside
+ * production (local development without network access to Google certs).
+ */
+export async function verifyBearerToken(authHeader: string | undefined): Promise<DecodedIdToken | null> {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice('Bearer '.length).trim();
+  if (!token) return null;
+
+  if (adminAuth) {
+    try {
+      return await adminAuth.verifyIdToken(token);
+    } catch {
+      // fall through to the (dev-only) fallback below
+    }
+  }
+
+  if (process.env.NODE_ENV !== 'production' && process.env.ALLOW_UNVERIFIED_TOKENS === 'true') {
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        const uid = payload?.user_id || payload?.sub;
+        if (uid) return { ...payload, uid, email: payload.email } as DecodedIdToken;
+      }
+    } catch {
+      // invalid token
+    }
+  }
+  return null;
+}
+
+/**
+ * requireAuth middleware: Verifies the Firebase ID token in the Authorization header.
  */
 export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -124,38 +157,15 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     });
   }
 
-  const token = authHeader.split('Bearer ')[1].trim();
-  if (adminAuth) {
-    try {
-      const decodedToken = await adminAuth.verifyIdToken(token);
-      req.user = decodedToken;
-      return next();
-    } catch (err: any) {
-      // Continue to JWT payload fallback
-    }
+  const user = await verifyBearerToken(authHeader);
+  if (!user) {
+    return res.status(401).json({
+      error: 'Unauthorized: Invalid or expired authentication token',
+      code: 'TOKEN_INVALID',
+    });
   }
-
-  try {
-    const parts = token.split('.');
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-      if (payload && (payload.user_id || payload.sub)) {
-        req.user = {
-          ...payload,
-          uid: payload.user_id || payload.sub,
-          email: payload.email,
-        } as any;
-        return next();
-      }
-    }
-  } catch (parseErr) {
-    // Parsing error
-  }
-
-  return res.status(401).json({
-    error: 'Unauthorized: Invalid or expired authentication token',
-    code: 'TOKEN_INVALID',
-  });
+  req.user = user;
+  return next();
 }
 
 /**
@@ -175,7 +185,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
     .toLowerCase();
 
   const userEmail = (req.user.email || '').trim().toLowerCase();
-  const isAdmin = userEmail === adminEmail || req.user.admin === true;
+  const isAdmin = (userEmail === adminEmail && req.user.email_verified === true) || req.user.admin === true;
 
   if (!isAdmin) {
     return res.status(403).json({
