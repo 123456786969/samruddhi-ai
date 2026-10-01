@@ -14,8 +14,9 @@ import {
   recordVoiceMinutes,
   requireVoiceMinutes,
   saveSubscription,
-  isPaymentProcessed,
-  recordProcessedPayment,
+  claimPayment,
+  releasePayment,
+  addVoiceTopUpMinutes,
   createLeadDoc,
   getLeadDoc,
   updateLeadDoc,
@@ -82,49 +83,13 @@ async function startServer() {
     String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
   const PORT = Number(process.env.PORT) || 3000;
 
-  interface OtpRecord {
-    otp: string;
-    expiresAt: number;
-    generatedAt: number;
-    verifiedAt?: number;
-    attempts?: number;
-  }
-
-  const OTP_FILE = path.join(process.cwd(), '.otp_store.json');
-
-  function loadOtpStore(): Map<string, OtpRecord> {
-    try {
-      if (fs.existsSync(OTP_FILE)) {
-        const raw = fs.readFileSync(OTP_FILE, 'utf-8');
-        const data = JSON.parse(raw);
-        const map = new Map<string, OtpRecord>();
-        const now = Date.now();
-        for (const [key, val] of Object.entries(data as Record<string, OtpRecord>)) {
-          if (val && (val.expiresAt > now - 15 * 60 * 1000 || (val.verifiedAt && now - val.verifiedAt < 15 * 60 * 1000))) {
-            map.set(key.toLowerCase().trim(), val);
-          }
-        }
-        return map;
-      }
-    } catch (e) {
-      console.warn('[OTP Store] Notice loading disk cache:', e);
-    }
-    return new Map<string, OtpRecord>();
-  }
-
-  function saveOtpStore(store: Map<string, OtpRecord>) {
-    try {
-      const obj: Record<string, OtpRecord> = {};
-      for (const [key, val] of store.entries()) {
-        obj[key] = val;
-      }
-      fs.writeFileSync(OTP_FILE, JSON.stringify(obj, null, 2), 'utf-8');
-    } catch (e) {
-      console.warn('[OTP Store] Notice persisting disk cache:', e);
-    }
-  }
-
-  const otpStore = loadOtpStore();
+  // OTPs live in Firestore (collection "otp_codes", server-only via default-deny rules).
+  // Only a salted hash of the code is stored; the document id is a hash of the email.
+  const OTP_TTL_MS = 10 * 60 * 1000;
+  const otpDocRef = (email: string) =>
+    adminDb.collection('otp_codes').doc(crypto.createHash('sha256').update(email).digest('hex'));
+  const hashOtp = (email: string, otp: string) =>
+    crypto.createHash('sha256').update(`${email}:${otp}`).digest('hex');
 
   // OTP Sending Route
   app.post('/api/send-otp', rateLimit('send-otp', 10, 10 * 60 * 1000), async (req, res) => {
@@ -139,7 +104,7 @@ async function startServer() {
         return res.status(400).json({ error: 'A valid email address is required' });
       }
 
-      const previous = otpStore.get(email);
+      const previous = (await otpDocRef(email).get()).data();
       if (previous && Date.now() - previous.generatedAt < 30 * 1000) {
         return res.status(429).json({ error: 'Please wait 30 seconds before requesting another code.' });
       }
@@ -149,17 +114,15 @@ async function startServer() {
       const now = Date.now();
       const refId = crypto.randomBytes(3).toString('hex').toUpperCase();
 
-      // Store in memory & persist: code is valid for 30 minutes, reset previous verified state
-      otpStore.set(email, { otp, expiresAt: now + 10 * 60 * 1000, generatedAt: now, attempts: 0 });
-      saveOtpStore(otpStore);
+      // Persist the hashed code (valid for 10 minutes), replacing any previous one
+      await otpDocRef(email).set({ otpHash: hashOtp(email, otp), expiresAt: now + OTP_TTL_MS, generatedAt: now, attempts: 0 });
 
       const smtpEmail = process.env.SMTP_EMAIL;
       const smtpPassword = process.env.SMTP_PASSWORD;
 
       if (!smtpEmail || !smtpPassword) {
         if (IS_PROD) {
-          otpStore.delete(email);
-          saveOtpStore(otpStore);
+          await otpDocRef(email).delete();
           console.error('[OTP Server] SMTP credentials are not configured; cannot deliver OTP in production.');
           return res.status(503).json({ error: 'Email delivery is not configured. Please contact support.' });
         }
@@ -233,8 +196,7 @@ async function startServer() {
         return res.json({ success: true, simulated: false });
       } catch (mailErr: any) {
         console.error('[OTP Server] Mail delivery failed:', mailErr.message);
-        otpStore.delete(email);
-        saveOtpStore(otpStore);
+        await otpDocRef(email).delete().catch(() => {});
         return res.status(502).json({ error: 'Could not send the verification email. Please try again.' });
       }
     } catch (err: any) {
@@ -244,55 +206,56 @@ async function startServer() {
   });
 
   // OTP Verification Route
-  app.post('/api/verify-otp', rateLimit('verify-otp', 30, 10 * 60 * 1000), (req, res) => {
+  app.post('/api/verify-otp', rateLimit('verify-otp', 30, 10 * 60 * 1000), async (req, res) => {
     try {
       const rawEmail = req.body?.email;
       const rawOtp = req.body?.otp;
       if (!rawEmail || !rawOtp) {
         return res.status(400).json({ error: 'Email and verification code are required' });
       }
-      
+
       const email = rawEmail.toString().trim().toLowerCase();
       const enteredOtp = rawOtp.toString().trim();
+      const ref = otpDocRef(email);
 
-      // Check in-memory store or reload from disk cache
-      let record = otpStore.get(email);
-      if (!record) {
-        const loaded = loadOtpStore();
-        record = loaded.get(email);
-        if (record) {
-          otpStore.set(email, record);
+      // Transaction keeps the attempt counter and single-use delete race-free
+      const outcome: 'ok' | 'missing' | 'expired' | 'locked' | 'invalid' = await adminDb.runTransaction(async (tx: any) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) return 'missing';
+        const record = snap.data();
+
+        if (Date.now() > record.expiresAt) {
+          tx.delete(ref);
+          return 'expired';
         }
-      }
 
-      if (!record) {
-        return res.status(400).json({ error: 'No active verification code found for this email. Please click Resend Code to receive a fresh code.' });
-      }
+        const attempts = (record.attempts || 0) + 1;
+        if (attempts > 5) {
+          tx.delete(ref);
+          return 'locked';
+        }
 
-      if (Date.now() > record.expiresAt) {
-        otpStore.delete(email);
-        saveOtpStore(otpStore);
-        return res.status(400).json({ error: 'Verification code has expired. Please click Resend Code to receive a fresh code in your mail.' });
-      }
+        const a = Buffer.from(record.otpHash);
+        const b = Buffer.from(hashOtp(email, enteredOtp));
+        if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+          tx.delete(ref); // single-use
+          return 'ok';
+        }
+        tx.update(ref, { attempts });
+        return 'invalid';
+      });
 
-      // Compare entered code with the randomized code stored
-      record.attempts = (record.attempts || 0) + 1;
-      if (record.attempts > 5) {
-        otpStore.delete(email);
-        saveOtpStore(otpStore);
-        return res.status(429).json({ error: 'Too many incorrect attempts. Please request a new code.' });
-      }
-      saveOtpStore(otpStore);
-
-      const a = Buffer.from(record.otp);
-      const b = Buffer.from(enteredOtp);
-      if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
-        // Single-use: delete after successful verification
-        otpStore.delete(email);
-        saveOtpStore(otpStore);
-        return res.json({ success: true });
-      } else {
-        return res.status(400).json({ error: 'Invalid verification code. Please check the randomized code sent to your email.' });
+      switch (outcome) {
+        case 'ok':
+          return res.json({ success: true });
+        case 'missing':
+          return res.status(400).json({ error: 'No active verification code found for this email. Please click Resend Code to receive a fresh code.' });
+        case 'expired':
+          return res.status(400).json({ error: 'Verification code has expired. Please click Resend Code to receive a fresh code in your mail.' });
+        case 'locked':
+          return res.status(429).json({ error: 'Too many incorrect attempts. Please request a new code.' });
+        default:
+          return res.status(400).json({ error: 'Invalid verification code. Please check the code sent to your email.' });
       }
     } catch (err: any) {
       console.error('[OTP Server] Error verifying OTP:', err);
@@ -317,7 +280,6 @@ async function startServer() {
     error?: string;
   }
 
-  const adminNotificationsLog: AdminNotificationLog[] = [];
   const DEFAULT_ADMIN_EMAIL = 'rajubasavanahalli@gmail.com';
 
   async function dispatchAdminNotification(data: {
@@ -467,9 +429,10 @@ async function startServer() {
       error: mailError
     };
 
-    adminNotificationsLog.unshift(logEntry);
-    if (adminNotificationsLog.length > 200) {
-      adminNotificationsLog.pop();
+    try {
+      await adminDb.collection('admin_notifications').doc(notifId).set(logEntry);
+    } catch (e) {
+      console.error('[ADMIN ALERT] Could not persist notification:', e);
     }
 
     return { success: true, log: logEntry, emailSent, mailError };
@@ -500,17 +463,20 @@ async function startServer() {
   });
 
   // Admin Notifications Retrieval Endpoint
-  app.get('/api/admin/notifications', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
-    const adminEmail = (process.env.ADMIN_NOTIFICATION_EMAIL || process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL).trim().toLowerCase();
-    res.json({
-      adminEmail,
-      logs: adminNotificationsLog,
-      totalCount: adminNotificationsLog.length
-    });
+  app.get('/api/admin/notifications', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res) => {
+    try {
+      const adminEmail = (process.env.ADMIN_NOTIFICATION_EMAIL || process.env.ADMIN_EMAIL || DEFAULT_ADMIN_EMAIL).trim().toLowerCase();
+      const snap = await adminDb.collection('admin_notifications').orderBy('timestamp', 'desc').limit(200).get();
+      const logs = snap.docs.map((d: any) => d.data());
+      res.json({ adminEmail, logs, totalCount: logs.length });
+    } catch (err) {
+      console.error('[Admin Notifications] Read failed:', err);
+      res.status(500).json({ error: 'Failed to load notifications' });
+    }
   });
 
-  // Server-side WhatsApp Message Storage
-  const whatsappServerLogs: Array<{
+  // Server-side WhatsApp message log (Firestore "server_whatsapp_logs", server-only)
+  type WhatsAppServerLog = {
     id: string;
     lead_id?: string;
     recipient: string;
@@ -520,7 +486,14 @@ async function startServer() {
     provider: 'meta_cloud_api' | 'meta_cloud_api_simulated';
     timestamp: number;
     error?: string;
-  }> = [];
+  };
+  const logWhatsApp = async (entry: WhatsAppServerLog) => {
+    try {
+      await adminDb.collection('server_whatsapp_logs').doc(entry.id).set(JSON.parse(JSON.stringify(entry)));
+    } catch (e) {
+      console.error('[WhatsApp Server] Could not persist log entry:', e);
+    }
+  };
 
   // Helper to validate and sanitize E.164 phone numbers
   function sanitizeAndValidateE164(phone: string): { valid: boolean; e164: string; digits: string; error?: string } {
@@ -659,7 +632,7 @@ async function startServer() {
             provider: 'meta_cloud_api' as const,
             timestamp: Date.now()
           };
-          whatsappServerLogs.unshift(logEntry);
+          await logWhatsApp(logEntry);
 
           console.log(`[WhatsApp Server] Successfully dispatched via Meta API. ID: ${messageId}`);
           return res.status(200).json({
@@ -675,7 +648,7 @@ async function startServer() {
           console.error('[WhatsApp Server] Meta Graph API returned error:', metaData);
           const errorMessage = metaData?.error?.message || metaData?.error?.error_user_msg || 'Meta Cloud API error';
           
-          whatsappServerLogs.unshift({
+          await logWhatsApp({
             id: `err-${Date.now()}`,
             lead_id: lead_id || undefined,
             recipient: e164,
@@ -711,7 +684,7 @@ async function startServer() {
         provider: 'meta_cloud_api_simulated' as const,
         timestamp: Date.now()
       };
-      whatsappServerLogs.unshift(logEntry);
+      await logWhatsApp(logEntry);
 
       return res.status(200).json({
         success: true,
@@ -736,7 +709,7 @@ async function startServer() {
   });
 
   // WhatsApp Status / Diagnostics Route
-  app.get('/api/whatsapp/status', requireAuth, (req: AuthenticatedRequest, res) => {
+  app.get('/api/whatsapp/status', requireAuth, async (req: AuthenticatedRequest, res) => {
     const hasToken = !!(process.env.WHATSAPP_API_TOKEN || process.env.META_ACCESS_TOKEN);
     const hasPhoneId = !!process.env.WHATSAPP_PHONE_NUMBER_ID;
     const hasWabaId = !!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
@@ -749,15 +722,19 @@ async function startServer() {
         has_phone_number_id: hasPhoneId,
         has_business_account_id: hasWabaId,
       },
-      total_logged_messages: whatsappServerLogs.length
+      total_logged_messages: (await adminDb.collection('server_whatsapp_logs').count().get()).data().count
     });
   });
 
   // WhatsApp Recent Server Logs Route
-  app.get('/api/whatsapp/logs', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
-    res.json({
-      logs: whatsappServerLogs.slice(0, 50)
-    });
+  app.get('/api/whatsapp/logs', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res) => {
+    try {
+      const snap = await adminDb.collection('server_whatsapp_logs').orderBy('timestamp', 'desc').limit(50).get();
+      res.json({ logs: snap.docs.map((d: any) => d.data()) });
+    } catch (err) {
+      console.error('[WhatsApp Server] Log read failed:', err);
+      res.status(500).json({ error: 'Failed to load logs' });
+    }
   });
 
   // -------------------------------------------------------------
@@ -944,48 +921,46 @@ async function startServer() {
       if (type !== 'plan' && type !== 'voice_topup') {
         return res.status(400).json({ error: 'Invalid payment type.' });
       }
-
-      // Idempotency check: don't apply the same payment twice
-      const alreadyProcessed = await isPaymentProcessed(razorpay_payment_id);
-      if (alreadyProcessed) {
-        console.log(`[Billing Server] Payment ${razorpay_payment_id} already processed.`);
-        const currentStatus = await getPlanStatus(uid, req.user?.email);
-        return res.json({ success: true, message: 'Payment already processed', planStatus: currentStatus });
+      if (type === 'voice_topup' && !VOICE_TOP_UP_PACKS.some((p) => p.id === pack_id)) {
+        return res.status(400).json({ error: 'Invalid pack_id.' });
       }
 
+      // Idempotency: atomically claim the payment so concurrent calls / webhook credit only once
       const now = Date.now();
-      await recordProcessedPayment(razorpay_payment_id, {
-        payment_id: razorpay_payment_id,
+      const claimed = await claimPayment(razorpay_payment_id, {
         order_id: razorpay_order_id || null,
         uid,
         type,
         plan_id: plan_id || null,
         billing_cycle: billing_cycle || null,
         pack_id: pack_id || null,
-        processed_at: now,
       });
-
-      if (type === 'plan') {
-        const isAnnual = billing_cycle === 'annual';
-        const durationMs = isAnnual ? 365 * 86400000 : 30 * 86400000;
-        await saveSubscription(uid, {
-          plan_id,
-          billing_cycle: isAnnual ? 'annual' : 'monthly',
-          status: 'active',
-          current_period_start: now,
-          current_period_end: now + durationMs,
-          pending_plan_id: null,
-          updated_at: now,
-        });
-      } else if (type === 'voice_topup') {
-        const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === pack_id);
-        const minutes = pack ? pack.minutes : 100;
+      if (!claimed) {
+        console.log(`[Billing Server] Payment ${razorpay_payment_id} already processed.`);
         const currentStatus = await getPlanStatus(uid, req.user?.email);
-        const currentTopUp = currentStatus.remaining.voiceTopUp || 0;
-        await saveSubscription(uid, {
-          voice_topup_minutes: currentTopUp + minutes,
-          updated_at: now,
-        });
+        return res.json({ success: true, message: 'Payment already processed', planStatus: currentStatus });
+      }
+
+      try {
+        if (type === 'plan') {
+          const isAnnual = billing_cycle === 'annual';
+          const durationMs = isAnnual ? 365 * 86400000 : 30 * 86400000;
+          await saveSubscription(uid, {
+            plan_id,
+            billing_cycle: isAnnual ? 'annual' : 'monthly',
+            status: 'active',
+            current_period_start: now,
+            current_period_end: now + durationMs,
+            pending_plan_id: null,
+            updated_at: now,
+          });
+        } else if (type === 'voice_topup') {
+          const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === pack_id);
+          await addVoiceTopUpMinutes(uid, pack!.minutes);
+        }
+      } catch (creditErr) {
+        await releasePayment(razorpay_payment_id).catch(() => {});
+        throw creditErr;
       }
 
       const updatedStatus = await getPlanStatus(uid, req.user?.email);
@@ -1026,38 +1001,33 @@ async function startServer() {
 
       if ((event === 'payment.captured' || event === 'order.paid') && uid) {
         const paymentId = paymentEntity.id;
-        const alreadyProcessed = await isPaymentProcessed(paymentId);
-        if (!alreadyProcessed) {
-          const now = Date.now();
-          await recordProcessedPayment(paymentId, {
-            payment_id: paymentId,
-            uid,
-            type: notes.type || 'plan',
-            processed_at: now,
-            webhook: true,
-          });
-
-          if (notes.type === 'voice_topup') {
-            const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === notes.pack_id);
-            const minutes = pack ? pack.minutes : 100;
-            const currentSub = await getPlanStatus(uid);
-            const currentTopUp = currentSub.remaining.voiceTopUp || 0;
-            await saveSubscription(uid, {
-              voice_topup_minutes: currentTopUp + minutes,
-              updated_at: now,
-            });
-          } else {
-            const isAnnual = notes.billing_cycle === 'annual';
-            const durationMs = isAnnual ? 365 * 86400000 : 30 * 86400000;
-            await saveSubscription(uid, {
-              plan_id: notes.plan_id || 'starter',
-              billing_cycle: isAnnual ? 'annual' : 'monthly',
-              status: 'active',
-              current_period_start: now,
-              current_period_end: now + durationMs,
-              pending_plan_id: null,
-              updated_at: now,
-            });
+        const now = Date.now();
+        const claimed = await claimPayment(paymentId, {
+          uid,
+          type: notes.type || 'plan',
+          webhook: true,
+        });
+        if (claimed) {
+          try {
+            if (notes.type === 'voice_topup') {
+              const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === notes.pack_id);
+              if (pack) await addVoiceTopUpMinutes(uid, pack.minutes);
+            } else {
+              const isAnnual = notes.billing_cycle === 'annual';
+              const durationMs = isAnnual ? 365 * 86400000 : 30 * 86400000;
+              await saveSubscription(uid, {
+                plan_id: notes.plan_id || 'starter',
+                billing_cycle: isAnnual ? 'annual' : 'monthly',
+                status: 'active',
+                current_period_start: now,
+                current_period_end: now + durationMs,
+                pending_plan_id: null,
+                updated_at: now,
+              });
+            }
+          } catch (creditErr) {
+            await releasePayment(paymentId).catch(() => {});
+            throw creditErr;
           }
         }
       }

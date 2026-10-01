@@ -52,61 +52,6 @@ export { FieldValue };
 
 export const DEFAULT_ADMIN_EMAIL = 'rajubasavanahalli@gmail.com';
 
-// -------------------------------------------------------------
-// PERSISTENT LOCAL STORAGE STORE
-// Ensures zero-downtime, crash-free operation even when ambient
-// Cloud Run environment lacks direct Google Cloud IAM credentials.
-// -------------------------------------------------------------
-const BILLING_STORE_PATH = path.join(process.cwd(), '.billing_store.json');
-
-interface BillingStoreSchema {
-  subscriptions: Record<string, any>;
-  usage: Record<string, any>;
-  processed_payments: Record<string, any>;
-  leads: Record<string, any>;
-  visits: Record<string, any>;
-  admin_notifications: any[];
-}
-
-function loadBillingStore(): BillingStoreSchema {
-  try {
-    if (fs.existsSync(BILLING_STORE_PATH)) {
-      const raw = fs.readFileSync(BILLING_STORE_PATH, 'utf-8');
-      const parsed = JSON.parse(raw);
-      return {
-        subscriptions: parsed.subscriptions || {},
-        usage: parsed.usage || {},
-        processed_payments: parsed.processed_payments || {},
-        leads: parsed.leads || {},
-        visits: parsed.visits || {},
-        admin_notifications: Array.isArray(parsed.admin_notifications) ? parsed.admin_notifications : [],
-      };
-    }
-  } catch (e) {
-    console.warn('[Billing Store] Warning loading store from disk:', e);
-  }
-  return {
-    subscriptions: {},
-    usage: {},
-    processed_payments: {},
-    leads: {},
-    visits: {},
-    admin_notifications: [],
-  };
-}
-
-let billingStore: BillingStoreSchema = loadBillingStore();
-
-function saveBillingStore() {
-  try {
-    const tmp = `${BILLING_STORE_PATH}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(billingStore, null, 2), 'utf-8');
-    fs.renameSync(tmp, BILLING_STORE_PATH);
-  } catch (e) {
-    console.warn('[Billing Store] Warning saving store to disk:', e);
-  }
-}
-
 export interface AuthenticatedRequest extends Request {
   user?: DecodedIdToken;
 }
@@ -242,34 +187,33 @@ export interface PlanStatus {
 }
 
 /**
+ * Firestore is the single source of truth for billing, usage and lead state.
+ * Failures are surfaced (never swallowed) so a misconfigured database can't
+ * silently grant or lose entitlements.
+ */
+function db(): any {
+  if (!adminDb) {
+    throw new Error('Firestore Admin is not initialised; billing storage is unavailable.');
+  }
+  return adminDb;
+}
+
+const randomSuffix = () => Math.random().toString(36).substring(2, 8);
+
+/**
  * Reads user's subscription and current month usage, enforcing expiry and limits.
- * Gracefully handles permissions, disk fallback, and default admin provisioning.
+ * Provisions the default administrator with an active Pro plan on first access.
  */
 export async function getPlanStatus(uid: string, userEmail?: string): Promise<PlanStatus> {
   const now = Date.now();
-  let sub: any = null;
+  const subRef = db().collection('subscriptions').doc(uid);
+  const subSnap = await subRef.get();
+  let sub: any = subSnap.exists ? subSnap.data() : null;
 
-  // 1. Try reading from Firestore Admin if available
-  if (adminDb) {
-    try {
-      const subRef = adminDb.collection('subscriptions').doc(uid);
-      const subSnap = await subRef.get();
-      if (subSnap.exists) {
-        sub = subSnap.data();
-      }
-    } catch (e: any) {
-      // Permission denied or uncredentialed in container - catch quietly and use local store
-    }
-  }
-
-  // 2. Read from persistent local store
-  if (!sub) {
-    sub = billingStore.subscriptions[uid] || null;
-  }
-
-  // 3. Auto-initialize default administrator with an active Pro plan and Founding Partner status
+  // Auto-initialize default administrator with an active Pro plan and Founding Partner status.
+  // Callers must only pass an email taken from a verified ID token.
   const cleanEmail = (userEmail || '').trim().toLowerCase();
-  const isDefaultAdmin = cleanEmail === DEFAULT_ADMIN_EMAIL.toLowerCase() || (!userEmail && uid.includes('default_admin'));
+  const isDefaultAdmin = cleanEmail === DEFAULT_ADMIN_EMAIL.toLowerCase();
   if (!sub && isDefaultAdmin) {
     sub = {
       plan_id: 'pro',
@@ -282,11 +226,9 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
       voice_topup_minutes: 300,
       updated_at: now,
     };
-    billingStore.subscriptions[uid] = sub;
-    saveBillingStore();
+    await subRef.set(sub);
   }
 
-  // Fallback to empty if not found
   if (!sub) {
     sub = {};
   }
@@ -339,23 +281,8 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
   // Read current month usage doc
   const monthStr = getCurrentMonthIST();
   const usageKey = `${uid}_${monthStr}`;
-  let usageData: any = null;
-
-  if (adminDb) {
-    try {
-      const usageRef = adminDb.collection('usage').doc(usageKey);
-      const usageSnap = await usageRef.get();
-      if (usageSnap.exists) {
-        usageData = usageSnap.data();
-      }
-    } catch (e: any) {
-      // Permission denied or uncredentialed - fallback to store
-    }
-  }
-
-  if (!usageData) {
-    usageData = billingStore.usage[usageKey] || {};
-  }
+  const usageSnap = await db().collection('usage').doc(usageKey).get();
+  const usageData: any = usageSnap.exists ? usageSnap.data() : {};
 
   const leadsUsed = usageData.leads_created || 0;
   const voiceMinutesUsed = usageData.voice_minutes_used || 0;
@@ -397,57 +324,65 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
 }
 
 /**
- * Saves subscription record to persistent store and attempts Firestore sync
+ * Merges data into the user's subscription document.
  */
 export async function saveSubscription(uid: string, data: any): Promise<void> {
-  billingStore.subscriptions[uid] = {
-    ...(billingStore.subscriptions[uid] || {}),
-    ...data,
-    updated_at: Date.now(),
-  };
-  saveBillingStore();
+  await db().collection('subscriptions').doc(uid).set({ ...data, updated_at: Date.now() }, { merge: true });
+}
 
-  if (adminDb) {
-    try {
-      await adminDb.collection('subscriptions').doc(uid).set(data, { merge: true });
-    } catch (e) {
-      // Non-fatal
-    }
-  }
+/**
+ * Credits extra voice minutes atomically (safe against concurrent top-ups).
+ */
+export async function addVoiceTopUpMinutes(uid: string, minutes: number): Promise<void> {
+  await db().collection('subscriptions').doc(uid).set(
+    { voice_topup_minutes: FieldValue.increment(minutes), updated_at: Date.now() },
+    { merge: true }
+  );
 }
 
 /**
  * Checks if a payment ID was already processed
  */
 export async function isPaymentProcessed(paymentId: string): Promise<boolean> {
-  if (billingStore.processed_payments[paymentId]) {
-    return true;
-  }
-  if (adminDb) {
-    try {
-      const snap = await adminDb.collection('processed_payments').doc(paymentId).get();
-      if (snap.exists) return true;
-    } catch (e) {}
-  }
-  return false;
+  const snap = await db().collection('processed_payments').doc(paymentId).get();
+  return snap.exists;
 }
 
 /**
- * Records processed payment to prevent replay
+ * Atomically claims a payment ID. Returns false if it was already processed,
+ * which makes concurrent verify-payment / webhook deliveries credit only once.
+ */
+export async function claimPayment(paymentId: string, data: any): Promise<boolean> {
+  try {
+    await db().collection('processed_payments').doc(paymentId).create({
+      payment_id: paymentId,
+      ...data,
+      processed_at: Date.now(),
+    });
+    return true;
+  } catch (e: any) {
+    // gRPC ALREADY_EXISTS
+    if (e?.code === 6 || /already exists/i.test(e?.message || '')) return false;
+    throw e;
+  }
+}
+
+/**
+ * Releases a claim so a failed crediting attempt can be retried (e.g. by webhook redelivery).
+ */
+export async function releasePayment(paymentId: string): Promise<void> {
+  await db().collection('processed_payments').doc(paymentId).delete();
+}
+
+/**
+ * Records processed payment to prevent replay (kept for callers that don't need the claim result)
  */
 export async function recordProcessedPayment(paymentId: string, data: any): Promise<void> {
-  billingStore.processed_payments[paymentId] = {
+  await db().collection('processed_payments').doc(paymentId).set({
     payment_id: paymentId,
     ...data,
     processed_at: Date.now(),
-  };
-  saveBillingStore();
-
-  if (adminDb) {
-    try {
-      await adminDb.collection('processed_payments').doc(paymentId).set(data);
-    } catch (e) {}
-  }
+  });
 }
 
 /**
@@ -456,33 +391,18 @@ export async function recordProcessedPayment(paymentId: string, data: any): Prom
 export async function recordLeadCreated(uid: string): Promise<number> {
   const monthStr = getCurrentMonthIST();
   const usageKey = `${uid}_${monthStr}`;
-
-  const currentUsage = billingStore.usage[usageKey] || {
-    agent_id: uid,
-    month: monthStr,
-    leads_created: 0,
-    voice_minutes_used: 0,
-  };
-  currentUsage.leads_created = (currentUsage.leads_created || 0) + 1;
-  currentUsage.updated_at = Date.now();
-  billingStore.usage[usageKey] = currentUsage;
-  saveBillingStore();
-
-  if (adminDb) {
-    try {
-      await adminDb.collection('usage').doc(usageKey).set(
-        {
-          agent_id: uid,
-          month: monthStr,
-          leads_created: FieldValue.increment(1),
-          updated_at: Date.now(),
-        },
-        { merge: true }
-      );
-    } catch (e) {}
-  }
-
-  return currentUsage.leads_created;
+  const ref = db().collection('usage').doc(usageKey);
+  await ref.set(
+    {
+      agent_id: uid,
+      month: monthStr,
+      leads_created: FieldValue.increment(1),
+      updated_at: Date.now(),
+    },
+    { merge: true }
+  );
+  const snap = await ref.get();
+  return snap.data()?.leads_created || 1;
 }
 
 /**
@@ -496,78 +416,43 @@ export async function recordVoiceMinutes(uid: string, rawMinutes: number): Promi
   const minutes = Math.max(1, Math.ceil(rawMinutes));
   const monthStr = getCurrentMonthIST();
   const usageKey = `${uid}_${monthStr}`;
+  const usageRef = db().collection('usage').doc(usageKey);
+  const subRef = db().collection('subscriptions').doc(uid);
 
-  const sub = billingStore.subscriptions[uid] || {};
-  const usage = billingStore.usage[usageKey] || { voice_minutes_used: 0 };
+  return db().runTransaction(async (tx: any) => {
+    const [usageSnap, subSnap] = await Promise.all([tx.get(usageRef), tx.get(subRef)]);
+    const usage = usageSnap.exists ? usageSnap.data() : {};
+    const sub = subSnap.exists ? subSnap.data() : {};
 
-  const planId = (sub.plan_id as PlanId) || 'starter';
-  const planDef = sub.status === 'active' && PLANS[planId] ? PLANS[planId] : null;
-  const monthlyLimit = planDef ? planDef.limits.voiceMinutesPerMonth : 0;
+    const planId = sub.plan_id as PlanId;
+    const planDef = sub.status === 'active' && planId && PLANS[planId] ? PLANS[planId] : null;
+    const monthlyLimit = planDef ? planDef.limits.voiceMinutesPerMonth : 0;
 
-  const currentUsed = usage.voice_minutes_used || 0;
-  const currentTopUp = sub.voice_topup_minutes || 0;
+    const currentUsed = usage.voice_minutes_used || 0;
+    const currentTopUp = sub.voice_topup_minutes || 0;
+    const allowanceRemaining = Math.max(0, monthlyLimit - currentUsed);
 
-  const allowanceRemaining = Math.max(0, monthlyLimit - currentUsed);
+    const consumedAllowance = Math.min(allowanceRemaining, minutes);
+    const consumedTopUp = Math.min(currentTopUp, minutes - consumedAllowance);
 
-  let consumedAllowance = 0;
-  let consumedTopUp = 0;
+    const newUsed = currentUsed + consumedAllowance;
+    const newTopUp = currentTopUp - consumedTopUp;
 
-  if (allowanceRemaining >= minutes) {
-    consumedAllowance = minutes;
-  } else {
-    consumedAllowance = allowanceRemaining;
-    consumedTopUp = minutes - allowanceRemaining;
-  }
+    tx.set(
+      usageRef,
+      { agent_id: uid, month: monthStr, voice_minutes_used: newUsed, updated_at: Date.now() },
+      { merge: true }
+    );
+    if (consumedTopUp > 0) {
+      tx.set(subRef, { voice_topup_minutes: newTopUp, updated_at: Date.now() }, { merge: true });
+    }
 
-  const newUsed = currentUsed + consumedAllowance;
-  const newTopUp = Math.max(0, currentTopUp - consumedTopUp);
-
-  usage.voice_minutes_used = newUsed;
-  usage.updated_at = Date.now();
-  billingStore.usage[usageKey] = usage;
-
-  if (consumedTopUp > 0 || sub.voice_topup_minutes !== undefined) {
-    sub.voice_topup_minutes = newTopUp;
-    sub.updated_at = Date.now();
-    billingStore.subscriptions[uid] = sub;
-  }
-  saveBillingStore();
-
-  if (adminDb) {
-    try {
-      await adminDb.runTransaction(async (transaction: any) => {
-        const usageRef = adminDb.collection('usage').doc(usageKey);
-        const subRef = adminDb.collection('subscriptions').doc(uid);
-        transaction.set(
-          usageRef,
-          {
-            agent_id: uid,
-            month: monthStr,
-            voice_minutes_used: newUsed,
-            updated_at: Date.now(),
-          },
-          { merge: true }
-        );
-        if (consumedTopUp > 0) {
-          transaction.set(
-            subRef,
-            {
-              voice_topup_minutes: newTopUp,
-              updated_at: Date.now(),
-            },
-            { merge: true }
-          );
-        }
-      });
-    } catch (e) {}
-  }
-
-  const remainingAllowance = Math.max(0, monthlyLimit - newUsed);
-  return {
-    consumedAllowance,
-    consumedTopUp,
-    remainingTotal: remainingAllowance + newTopUp,
-  };
+    return {
+      consumedAllowance,
+      consumedTopUp,
+      remainingTotal: Math.max(0, monthlyLimit - newUsed) + newTopUp,
+    };
+  });
 }
 
 /**
@@ -598,9 +483,9 @@ export function requireVoiceMinutes(estimatedMinutes = 2) {
 
       next();
     } catch (err: any) {
-      console.error('[requireVoiceMinutes] Verification notice:', err);
-      // Fail open safely with minimum allowance rather than crashing
-      next();
+      // Fail closed: if usage can't be verified, don't hand out free minutes
+      console.error('[requireVoiceMinutes] Verification failed:', err);
+      return res.status(503).json({ error: 'Could not verify your voice minutes. Please try again.' });
     }
   };
 }
@@ -609,76 +494,32 @@ export function requireVoiceMinutes(estimatedMinutes = 2) {
  * Server-side lead document persistence helper
  */
 export async function createLeadDoc(leadDoc: any): Promise<{ id: string }> {
-  const id = `lead_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  billingStore.leads[id] = { id, ...leadDoc };
-  saveBillingStore();
-
-  if (adminDb) {
-    try {
-      const docRef = await adminDb.collection('leads').add(leadDoc);
-      return { id: docRef.id };
-    } catch (e) {}
-  }
-  return { id };
+  const docRef = await db().collection('leads').add(leadDoc);
+  return { id: docRef.id };
 }
 
 export async function getLeadDoc(leadId: string): Promise<{ exists: boolean; data: () => any }> {
-  if (adminDb) {
-    try {
-      const snap = await adminDb.collection('leads').doc(leadId).get();
-      if (snap.exists) return { exists: true, data: () => snap.data() };
-    } catch (e) {}
-  }
-
-  const local = billingStore.leads[leadId];
-  if (local) {
-    return { exists: true, data: () => local };
-  }
+  const snap = await db().collection('leads').doc(leadId).get();
+  if (snap.exists) return { exists: true, data: () => snap.data() };
   return { exists: false, data: () => null };
 }
 
 export async function updateLeadDoc(leadId: string, data: any): Promise<void> {
-  if (billingStore.leads[leadId]) {
-    billingStore.leads[leadId] = { ...billingStore.leads[leadId], ...data };
-    saveBillingStore();
-  }
-  if (adminDb) {
-    try {
-      await adminDb.collection('leads').doc(leadId).update(data);
-    } catch (e) {}
-  }
+  await db().collection('leads').doc(leadId).update(data);
 }
 
 /**
  * Server-side visit document persistence helper
  */
 export async function createVisitDoc(visitDoc: any): Promise<{ id: string }> {
-  const id = `visit_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  billingStore.visits[id] = { id, ...visitDoc };
-  saveBillingStore();
-
-  if (adminDb) {
-    try {
-      const docRef = await adminDb.collection('visits').add(visitDoc);
-      return { id: docRef.id };
-    } catch (e) {}
-  }
-  return { id };
+  const docRef = await db().collection('visits').add(visitDoc);
+  return { id: docRef.id };
 }
 
 /**
  * Server-side admin notification helper
  */
 export async function createAdminNotification(notifDoc: any): Promise<{ id: string }> {
-  const id = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  billingStore.admin_notifications.unshift({ id, ...notifDoc });
-  saveBillingStore();
-
-  if (adminDb) {
-    try {
-      const docRef = await adminDb.collection('admin_notifications').add(notifDoc);
-      return { id: docRef.id };
-    } catch (e) {}
-  }
-  return { id };
+  const docRef = await db().collection('admin_notifications').add(notifDoc);
+  return { id: docRef.id };
 }
