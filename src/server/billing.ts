@@ -207,15 +207,19 @@ const randomSuffix = () => Math.random().toString(36).substring(2, 8);
 export async function getPlanStatus(uid: string, userEmail?: string): Promise<PlanStatus> {
   const now = Date.now();
   const subRef = db().collection('subscriptions').doc(uid);
-  const subSnap = await subRef.get();
-  let sub: any = subSnap.exists ? subSnap.data() : null;
 
   // Auto-initialize default administrator with an active Pro plan and Founding Partner status.
   // Callers must only pass an email taken from a verified ID token.
   const cleanEmail = (userEmail || '').trim().toLowerCase();
   const isDefaultAdmin = cleanEmail === DEFAULT_ADMIN_EMAIL.toLowerCase();
-  if (!sub && isDefaultAdmin) {
-    sub = {
+
+  // Read (and, for the default admin on first access, create) in one transaction so two
+  // simultaneous first requests can't both provision or overwrite each other.
+  let sub: any = await db().runTransaction(async (tx: any) => {
+    const snap = await tx.get(subRef);
+    if (snap.exists) return snap.data();
+    if (!isDefaultAdmin) return null;
+    const created = {
       plan_id: 'pro',
       billing_cycle: 'annual',
       status: 'active',
@@ -226,8 +230,9 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
       voice_topup_minutes: 300,
       updated_at: now,
     };
-    await subRef.set(sub);
-  }
+    tx.set(subRef, created);
+    return created;
+  });
 
   if (!sub) {
     sub = {};
@@ -235,29 +240,41 @@ export async function getPlanStatus(uid: string, userEmail?: string): Promise<Pl
 
   let status: 'active' | 'expired' | 'none' = (sub.status as any) || 'none';
   let planId: PlanId | null = (sub.plan_id as PlanId) || null;
-  const currentPeriodStart = sub.current_period_start || null;
+  let currentPeriodStart = sub.current_period_start || null;
   let currentPeriodEnd = sub.current_period_end || null;
-  const pendingPlanId = sub.pending_plan_id || null;
+  let pendingPlanId = sub.pending_plan_id || null;
 
-  // Check if current period has expired
+  // Check if current period has expired. Re-read inside a transaction so a concurrent
+  // payment that just extended the period is never overwritten with "expired".
   if (status === 'active' && currentPeriodEnd && now > currentPeriodEnd) {
-    if (pendingPlanId) {
-      planId = pendingPlanId as PlanId;
-      status = 'active';
-      const cycleMs = sub.billing_cycle === 'annual' ? 365 * 86400000 : 30 * 86400000;
-      currentPeriodEnd = now + cycleMs;
-      await saveSubscription(uid, {
-        plan_id: planId,
-        status: 'active',
-        current_period_start: now,
-        current_period_end: currentPeriodEnd,
-        pending_plan_id: null,
-        updated_at: now,
-      });
-    } else {
-      status = 'expired';
-      await saveSubscription(uid, { status: 'expired', updated_at: now });
-    }
+    const next: any = await db().runTransaction(async (tx: any) => {
+      const snap = await tx.get(subRef);
+      const cur = snap.exists ? snap.data() : {};
+      if (cur.status !== 'active' || !cur.current_period_end || now <= cur.current_period_end) {
+        return cur; // already handled or renewed by someone else
+      }
+      if (cur.pending_plan_id) {
+        const cycleMs = cur.billing_cycle === 'annual' ? 365 * 86400000 : 30 * 86400000;
+        const renewed = {
+          plan_id: cur.pending_plan_id,
+          status: 'active',
+          current_period_start: now,
+          current_period_end: now + cycleMs,
+          pending_plan_id: null,
+          updated_at: now,
+        };
+        tx.set(subRef, renewed, { merge: true });
+        return { ...cur, ...renewed };
+      }
+      tx.set(subRef, { status: 'expired', updated_at: now }, { merge: true });
+      return { ...cur, status: 'expired' };
+    });
+    sub = next;
+    status = (sub.status as any) || 'none';
+    planId = (sub.plan_id as PlanId) || null;
+    currentPeriodStart = sub.current_period_start || null;
+    currentPeriodEnd = sub.current_period_end || null;
+    pendingPlanId = sub.pending_plan_id || null;
   }
 
   // Check founding partner status
