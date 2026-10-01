@@ -1,0 +1,296 @@
+{
+  "entities": {
+    "Agent": {
+      "title": "Agent",
+      "description": "Agent user profile",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 100 },
+        "businessName": { "type": "string", "maxLength": 100 },
+        "photo": { "type": "string", "maxLength": 500 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "slug": { "type": "string", "maxLength": 100 }
+      }
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Real estate lead",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "budget_min": { "type": "number" },
+        "budget_max": { "type": "number" },
+        "preferred_location": { "type": "string" },
+        "property_type": { "type": "string" },
+        "source": { "type": "string" },
+        "stage": { "type": "string" },
+        "score": { "type": "number" },
+        "tags": { "type": "array" },
+        "created_at": { "type": "number" },
+        "last_contacted_at": { "type": "number" },
+        "notes": { "type": "string" }
+      }
+    },
+    "Deal": {
+      "title": "Deal",
+      "description": "Deal or opportunity",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "lead_id": { "type": "string" },
+        "property_id": { "type": "string" },
+        "value": { "type": "number" },
+        "stage": { "type": "string" },
+        "expected_close_date": { "type": "number" },
+        "closed_at": { "type": "number" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "Activity timeline for a lead",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "lead_id": { "type": "string" },
+        "type": { "type": "string" },
+        "content": { "type": "string" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Agent task",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "lead_id": { "type": "string" },
+        "title": { "type": "string" },
+        "due_date": { "type": "number" },
+        "status": { "type": "string" },
+        "reminder": { "type": "boolean" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "Property": {
+      "title": "Property",
+      "description": "Property listing",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "title": { "type": "string" },
+        "location": { "type": "string" },
+        "price": { "type": "number" },
+        "bedrooms": { "type": "number" },
+        "area_sqft": { "type": "number" },
+        "short_description": { "type": "string" },
+        "total_units": { "type": "number" },
+        "units_sold": { "type": "number" },
+        "units_reserved": { "type": "number" },
+        "photos": { "type": "array" },
+        "is_active": { "type": "boolean" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "Visit": {
+      "title": "Visit",
+      "description": "Site visit request",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "lead_id": { "type": "string" },
+        "requested_time": { "type": "number" },
+        "status": { "type": "string" },
+        "property_id": { "type": "string" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Agent expense or ad spend",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "type": { "type": "string" },
+        "platform": { "type": "string" },
+        "campaign": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "note": { "type": "string" },
+        "date": { "type": "number" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "WhatsAppTemplate": {
+      "title": "WhatsAppTemplate",
+      "description": "WhatsApp follow-up notification template",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "title": { "type": "string" },
+        "trigger_event": { "type": "string" },
+        "delay_minutes": { "type": "number" },
+        "language": { "type": "string" },
+        "body": { "type": "string" },
+        "is_active": { "type": "boolean" },
+        "created_at": { "type": "number" }
+      }
+    },
+    "WhatsAppLog": {
+      "title": "WhatsAppLog",
+      "description": "Log of dispatched automated or manual WhatsApp notification",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "lead_id": { "type": "string" },
+        "lead_name": { "type": "string" },
+        "recipient_phone": { "type": "string" },
+        "template_id": { "type": "string" },
+        "template_title": { "type": "string" },
+        "message": { "type": "string" },
+        "trigger_type": { "type": "string" },
+        "status": { "type": "string" },
+        "sent_at": { "type": "number" },
+        "error_message": { "type": "string" }
+      }
+    },
+    "WhatsAppConfig": {
+      "title": "WhatsAppConfig",
+      "description": "Agent WhatsApp automation preferences and API settings",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "auto_send_on_new_lead": { "type": "boolean" },
+        "auto_send_site_visit_reminder": { "type": "boolean" },
+        "default_delay_seconds": { "type": "number" },
+        "preferred_language": { "type": "string" },
+        "business_phone_number": { "type": "string" },
+        "api_provider": { "type": "string" },
+        "meta_phone_number_id": { "type": "string" },
+        "webhook_status": { "type": "string" },
+        "created_at": { "type": "number" },
+        "updated_at": { "type": "number" }
+      }
+    },
+    "AdminNotification": {
+      "title": "Admin Notification",
+      "description": "Log of user logins, onboarding events, and demo bookings for admin follow-ups",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "companyName": { "type": "string" },
+        "phone": { "type": "string" },
+        "details": { "type": "object" },
+        "timestamp": { "type": "number" }
+      }
+    },
+    "PublicProfile": {
+      "title": "PublicProfile",
+      "description": "Publicly readable agent profile for property catalogues",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "businessName": { "type": "string", "maxLength": 100 },
+        "photo": { "type": "string", "maxLength": 500 },
+        "slug": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["name", "slug"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "User subscription plan and entitlement data, written only by server",
+      "type": "object",
+      "properties": {
+        "plan_id": { "type": "string" },
+        "billing_cycle": { "type": "string", "enum": ["monthly", "annual"] },
+        "status": { "type": "string", "enum": ["active", "expired", "none"] },
+        "current_period_start": { "type": "number" },
+        "current_period_end": { "type": "number" },
+        "founding_partner": { "type": "boolean" },
+        "founding_partner_until": { "type": "number" },
+        "voice_topup_minutes": { "type": "number" },
+        "updated_at": { "type": "number" }
+      }
+    },
+    "Usage": {
+      "title": "Usage",
+      "description": "Monthly usage tracking per agent in Asia/Kolkata timezone",
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string" },
+        "month": { "type": "string" },
+        "leads_created": { "type": "number" },
+        "voice_minutes_used": { "type": "number" },
+        "updated_at": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/subscriptions/{userId}": {
+      "schema": { "$ref": "#/entities/Subscription" },
+      "description": "User subscription status and voice top-ups"
+    },
+    "/usage/{usageId}": {
+      "schema": { "$ref": "#/entities/Usage" },
+      "description": "Monthly usage records per agent"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/Agent" },
+      "description": "Agents"
+    },
+    "/public_profiles/{userId}": {
+      "schema": { "$ref": "#/entities/PublicProfile" },
+      "description": "Public agent profiles for catalogue view"
+    },
+    "/leads/{leadId}": {
+      "schema": { "$ref": "#/entities/Lead" },
+      "description": "Leads"
+    },
+    "/deals/{dealId}": {
+      "schema": { "$ref": "#/entities/Deal" },
+      "description": "Deals"
+    },
+    "/activities/{activityId}": {
+      "schema": { "$ref": "#/entities/Activity" },
+      "description": "Activities"
+    },
+    "/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "Tasks"
+    },
+    "/properties/{propertyId}": {
+      "schema": { "$ref": "#/entities/Property" },
+      "description": "Properties"
+    },
+    "/visits/{visitId}": {
+      "schema": { "$ref": "#/entities/Visit" },
+      "description": "Visits"
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Expenses"
+    },
+    "/whatsapp_templates/{templateId}": {
+      "schema": { "$ref": "#/entities/WhatsAppTemplate" },
+      "description": "Automated WhatsApp follow-up templates"
+    },
+    "/whatsapp_logs/{logId}": {
+      "schema": { "$ref": "#/entities/WhatsAppLog" },
+      "description": "Dispatched WhatsApp notification logs"
+    },
+    "/whatsapp_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/WhatsAppConfig" },
+      "description": "WhatsApp automation settings"
+    },
+    "/admin_notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/AdminNotification" },
+      "description": "Admin login alerts and demo booking logs"
+    }
+  }
+}

@@ -1,0 +1,140 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Default deny-all rule at the top
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(agentId) {
+      return isSignedIn() && request.auth.uid == agentId;
+    }
+
+    function incomingOwnerMatches() {
+      return isSignedIn() && request.resource.data.agent_id == request.auth.uid;
+    }
+
+    function existingOwnerMatches() {
+      return isSignedIn() && resource.data.agent_id == request.auth.uid;
+    }
+
+    // 8. Basic field validation on leads create: name is string <= 200 chars, phone is string <= 20 chars
+    function isValidLeadCreate() {
+      return incomingOwnerMatches()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 200
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 20;
+    }
+
+    // 3. Collection: leads
+    match /leads/{leadId} {
+      allow read: if existingOwnerMatches();
+      allow create: if isValidLeadCreate();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    // 3. Collections: deals, activities, tasks, visits, expenses, whatsapp_templates, whatsapp_logs, whatsapp_settings
+    match /deals/{dealId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /activities/{activityId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /visits/{visitId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /expenses/{expenseId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /whatsapp_templates/{templateId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /whatsapp_logs/{logId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    match /whatsapp_settings/{settingId} {
+      allow read: if existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    // 4. properties
+    // Public read ONLY when resource.data.is_active == true (needed for public catalogue)
+    // The owning agent can read all their own properties (active or not)
+    // create/update/delete: owner rules
+    match /properties/{propertyId} {
+      allow read: if (resource.data.is_active == true) || existingOwnerMatches();
+      allow create: if incomingOwnerMatches();
+      allow update: if existingOwnerMatches() && incomingOwnerMatches();
+      allow delete: if existingOwnerMatches();
+    }
+
+    // 5. /users/{userId}
+    // Read and write ONLY by the owner (request.auth.uid == userId)
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // 5. /public_profiles/{userId}
+    // Public read allowed; write only by owner
+    match /public_profiles/{userId} {
+      allow read: if true;
+      allow write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // 6. admin_notifications: clients may NOT read or write at all
+    match /admin_notifications/{notifId} {
+      allow read, write: if false;
+    }
+
+    // 7. Subscriptions and Usage
+    match /subscriptions/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /usage/{usageId} {
+      allow read, write: if isSignedIn() && (resource == null || resource.data.agent_id == request.auth.uid);
+    }
+  }
+}

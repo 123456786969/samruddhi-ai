@@ -1,0 +1,6 @@
+{
+  "name": "Samruddhi AI",
+  "description": "AI-powered real estate lead engine landing page with automated WhatsApp engagement, multilingual AI voice calls, interactive ROI calculator, and site visit booking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
