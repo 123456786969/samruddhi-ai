@@ -144,7 +144,11 @@ export async function launchRazorpayPayment(options: LaunchCheckoutOptions): Pro
       });
       rzp.open();
     } else {
-      // 3. Graceful Fallback Verification for preview sandboxes
+      // 3. Simulated verification is for local development / preview sandboxes only.
+      //    In production a payment window that failed to load must never look like a payment.
+      if (!import.meta.env.DEV) {
+        throw new Error('Could not load the payment window. Please check your connection and try again.');
+      }
       const simPaymentId = `sim_pay_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const verifyRes = await apiFetch<{ success: boolean; planStatus: any }>('/api/billing/verify-payment', {
         method: 'POST',

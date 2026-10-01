@@ -6,6 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import nodemailer from 'nodemailer';
 import Razorpay from 'razorpay';
+import { createOrder, verifyPayment, processWebhook, PaymentError, PaymentsConfig } from './src/server/payments';
 import { issueOtp, checkOtp, discardOtp } from './src/server/otp';
 import { OTP_CLAIM } from './src/shared/otp';
 import {
@@ -17,9 +18,6 @@ import {
   recordVoiceMinutes,
   requireVoiceMinutes,
   saveSubscription,
-  claimPayment,
-  releasePayment,
-  addVoiceTopUpMinutes,
   createLeadDoc,
   getLeadDoc,
   updateLeadDoc,
@@ -34,8 +32,6 @@ import {
 import {
   PLANS,
   PlanId,
-  priceFor,
-  priceForTopUp,
   VOICE_TOP_UP_PACKS,
   FOUNDING_PARTNER_DISCOUNT,
 } from './src/shared/plans';
@@ -730,270 +726,77 @@ async function startServer() {
     }
   });
 
-  // 2. Create Order Endpoint (Computes price strictly on server with 18% GST & Founding Partner discount)
+  const paymentsCfg: PaymentsConfig = {
+    razorpay: razorpayInstance as any,
+    keyId: RAZORPAY_KEY_ID,
+    keySecret: RAZORPAY_KEY_SECRET,
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
+    isProd: IS_PROD,
+  };
+
+  const sendPaymentError = (res: express.Response, err: any, label: string) => {
+    if (err instanceof PaymentError) return res.status(err.status).json({ error: err.message, code: err.code });
+    console.error(`[${label}] Error:`, err);
+    return res.status(500).json({ error: 'Payment processing failed. Please try again.' });
+  };
+
+  // 2. Create Order: price, founding discount and GST are computed on the server in paise
   app.post('/api/billing/create-order', requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      const uid = req.user!.uid;
-      const { type = 'plan', plan_id, billing_cycle = 'monthly', pack_id } = req.body;
-
-      let subtotal = 0;
-      let gst = 0;
-      let total = 0;
-      let description = '';
-
-      const planStatus = await getPlanStatus(uid, req.user?.email);
-
-      if (type === 'plan') {
-        if (!plan_id || !PLANS[plan_id as PlanId]) {
-          return res.status(400).json({ error: 'Invalid plan_id. Must be starter, pro, or elite.' });
-        }
-        const cycle = billing_cycle === 'annual' ? 'annual' : 'monthly';
-        const pricing = priceFor(plan_id, cycle, planStatus.isFoundingPartner);
-        subtotal = pricing.subtotal;
-        gst = pricing.gst;
-        total = pricing.total;
-        description = `Samruddhi AI ${PLANS[plan_id as PlanId].name} Plan (${cycle})${planStatus.isFoundingPartner ? ' - Founding Partner 40% Off' : ''}`;
-      } else if (type === 'voice_topup') {
-        if (planStatus.status !== 'active') {
-          return res.status(400).json({ error: 'Voice minute top-ups require an active plan subscription.' });
-        }
-        const topUp = priceForTopUp(pack_id);
-        if (!topUp.pack) {
-          return res.status(400).json({ error: 'Invalid pack_id. Must be voice_100 or voice_500.' });
-        }
-        subtotal = topUp.subtotal;
-        gst = topUp.gst;
-        total = topUp.total;
-        description = `Samruddhi AI ${topUp.pack.minutes} Extra Voice Minutes Top-up Pack`;
-      } else {
-        return res.status(400).json({ error: 'Invalid order type. Must be plan or voice_topup.' });
-      }
-
-      // Amount in paise (1 INR = 100 paise)
-      const amountPaise = total * 100;
-      let orderId = `order_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
-      if (!razorpayInstance && IS_PROD) {
-        return res.status(503).json({ error: 'Payments are not configured. Please contact support.' });
-      }
-
-      if (razorpayInstance) {
-        try {
-          const rzpOrder = await razorpayInstance.orders.create({
-            amount: amountPaise,
-            currency: 'INR',
-            receipt: `rcpt_${uid.slice(0, 6)}_${Date.now().toString().slice(-6)}`,
-            notes: {
-              uid,
-              type,
-              plan_id: type === 'plan' ? plan_id : '',
-              billing_cycle: type === 'plan' ? billing_cycle : '',
-              pack_id: type === 'voice_topup' ? pack_id : '',
-              isFoundingPartner: String(planStatus.isFoundingPartner),
-            },
-          });
-          orderId = rzpOrder.id;
-        } catch (rErr: any) {
-          console.error('[Razorpay API] Order creation failed:', rErr.message);
-          return res.status(502).json({ error: 'Could not create the payment order. Please try again.' });
-        }
-      }
-
-      console.log(`[Billing Server] Created order ${orderId} for user ${uid}: Total ₹${total} (Subtotal: ₹${subtotal}, GST: ₹${gst})`);
-
-      return res.json({
-        success: true,
-        orderId,
-        id: orderId,
-        amount: amountPaise,
-        currency: 'INR',
-        key: RAZORPAY_KEY_ID,
+      const { type, plan_id, billing_cycle, pack_id } = req.body || {};
+      const order = await createOrder(paymentsCfg, {
+        uid: req.user!.uid,
+        email: req.user?.email,
         type,
-        plan_id,
-        billing_cycle,
-        pack_id,
-        subtotal,
-        gst,
-        total,
-        description,
-        isFoundingPartner: planStatus.isFoundingPartner,
+        planId: plan_id,
+        billingCycle: billing_cycle,
+        packId: pack_id,
       });
-    } catch (err: any) {
-      console.error('[Create Order] Error:', err);
-      return res.status(500).json({ error: err.message || 'Failed to create payment order' });
+      return res.json(order);
+    } catch (err) {
+      return sendPaymentError(res, err, 'Create Order');
     }
   });
 
-  // 3. Verify Payment Endpoint (Idempotent)
+  // 3. Verify Payment: the browser only supplies Razorpay's ids + signature. What is credited comes
+  //    from the order record the server stored, after the signature and Razorpay's own order status
+  //    and amount have been checked. Idempotent.
   app.post('/api/billing/verify-payment', requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      const uid = req.user!.uid;
-      const body = req.body || {};
-      const razorpay_order_id = body.razorpay_order_id;
-      const razorpay_payment_id = body.razorpay_payment_id;
-      const razorpay_signature = body.razorpay_signature;
-      let type = body.type || 'plan';
-      let plan_id = body.plan_id;
-      let billing_cycle = body.billing_cycle || 'monthly';
-      let pack_id = body.pack_id;
-
-      if (!razorpay_payment_id || typeof razorpay_payment_id !== 'string') {
-        return res.status(400).json({ error: 'Payment ID is required.' });
-      }
-
-      if (razorpayInstance) {
-        // Live mode: signature is mandatory, simulated payments are never accepted
-        if (!razorpay_order_id || typeof razorpay_signature !== 'string' || razorpay_payment_id.startsWith('sim_pay_')) {
-          return res.status(400).json({ error: 'Payment signature verification failed.' });
-        }
-        const expected = Buffer.from(
-          crypto.createHmac('sha256', RAZORPAY_KEY_SECRET).update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex')
-        );
-        const given = Buffer.from(razorpay_signature);
-        if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {
-          return res.status(400).json({ error: 'Payment signature verification failed.' });
-        }
-
-        // Trust only the server-side order: it must belong to this user and be fully paid.
-        // What is credited comes from the order notes, not from client-supplied fields.
-        const order: any = await razorpayInstance.orders.fetch(razorpay_order_id);
-        if (!order || order.notes?.uid !== uid) {
-          return res.status(403).json({ error: 'This payment does not belong to your account.' });
-        }
-        if (order.status !== 'paid') {
-          return res.status(402).json({ error: 'Payment has not been completed.' });
-        }
-        type = order.notes.type || 'plan';
-        plan_id = order.notes.plan_id || undefined;
-        billing_cycle = order.notes.billing_cycle || 'monthly';
-        pack_id = order.notes.pack_id || undefined;
-      } else if (IS_PROD) {
-        return res.status(503).json({ error: 'Payments are not configured. Please contact support.' });
-      } else if (!razorpay_payment_id.startsWith('sim_pay_')) {
-        return res.status(400).json({ error: 'Payment signature verification failed.' });
-      }
-
-      if (type === 'plan' && (!plan_id || !PLANS[plan_id as PlanId])) {
-        return res.status(400).json({ error: 'Invalid plan_id.' });
-      }
-      if (type !== 'plan' && type !== 'voice_topup') {
-        return res.status(400).json({ error: 'Invalid payment type.' });
-      }
-      if (type === 'voice_topup' && !VOICE_TOP_UP_PACKS.some((p) => p.id === pack_id)) {
-        return res.status(400).json({ error: 'Invalid pack_id.' });
-      }
-
-      // Idempotency: atomically claim the payment so concurrent calls / webhook credit only once
-      const now = Date.now();
-      const claimed = await claimPayment(razorpay_payment_id, {
-        order_id: razorpay_order_id || null,
-        uid,
-        type,
-        plan_id: plan_id || null,
-        billing_cycle: billing_cycle || null,
-        pack_id: pack_id || null,
+      const b = req.body || {};
+      const outcome = await verifyPayment(paymentsCfg, {
+        uid: req.user!.uid,
+        orderId: b.razorpay_order_id,
+        paymentId: b.razorpay_payment_id,
+        signature: b.razorpay_signature,
       });
-      if (!claimed) {
-        console.log(`[Billing Server] Payment ${razorpay_payment_id} already processed.`);
-        const currentStatus = await getPlanStatus(uid, req.user?.email);
-        return res.json({ success: true, message: 'Payment already processed', planStatus: currentStatus });
-      }
-
-      try {
-        if (type === 'plan') {
-          const isAnnual = billing_cycle === 'annual';
-          const durationMs = isAnnual ? 365 * 86400000 : 30 * 86400000;
-          await saveSubscription(uid, {
-            plan_id,
-            billing_cycle: isAnnual ? 'annual' : 'monthly',
-            status: 'active',
-            current_period_start: now,
-            current_period_end: now + durationMs,
-            pending_plan_id: null,
-            updated_at: now,
-          });
-        } else if (type === 'voice_topup') {
-          const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === pack_id);
-          await addVoiceTopUpMinutes(uid, pack!.minutes);
-        }
-      } catch (creditErr) {
-        await releasePayment(razorpay_payment_id).catch(() => {});
-        throw creditErr;
-      }
-
-      const updatedStatus = await getPlanStatus(uid, req.user?.email);
-      console.log(`[Billing Server] Verified payment for user ${uid}. Status:`, updatedStatus.status);
-
+      const planStatus = await getPlanStatus(req.user!.uid, req.user?.email);
       return res.json({
         success: true,
-        message: 'Payment verified and credited successfully.',
-        planStatus: updatedStatus,
+        message: outcome === 'credited' ? 'Payment verified and credited successfully.' : 'Payment already processed',
+        planStatus,
       });
-    } catch (err: any) {
-      console.error('[Verify Payment] Error:', err);
-      return res.status(500).json({ error: err.message || 'Payment verification failed' });
+    } catch (err) {
+      return sendPaymentError(res, err, 'Verify Payment');
     }
   });
 
-  // 4. Razorpay Webhook Endpoint
+  // 4. Razorpay Webhook: signature over the RAW body, event-id + payment-id idempotency
   app.post('/api/billing/webhook', async (req, res) => {
     try {
-      const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-      if (!webhookSecret && IS_PROD) {
-        return res.status(503).json({ error: 'Webhook is not configured' });
-      }
-      if (webhookSecret) {
-        const webhookSignature = String(req.headers['x-razorpay-signature'] || '');
-        const rawBody: Buffer = (req as any).rawBody || Buffer.from(JSON.stringify(req.body));
-        const digest = Buffer.from(crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex'));
-        const given = Buffer.from(webhookSignature);
-        if (digest.length !== given.length || !crypto.timingSafeEqual(digest, given)) {
-          return res.status(400).json({ error: 'Invalid webhook signature' });
-        }
-      }
-
-      const event = req.body?.event;
-      const paymentEntity = req.body?.payload?.payment?.entity;
-      const notes = paymentEntity?.notes || {};
-      const uid = notes.uid;
-
-      if ((event === 'payment.captured' || event === 'order.paid') && uid) {
-        const paymentId = paymentEntity.id;
-        const now = Date.now();
-        const claimed = await claimPayment(paymentId, {
-          uid,
-          type: notes.type || 'plan',
-          webhook: true,
-        });
-        if (claimed) {
-          try {
-            if (notes.type === 'voice_topup') {
-              const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === notes.pack_id);
-              if (pack) await addVoiceTopUpMinutes(uid, pack.minutes);
-            } else {
-              const isAnnual = notes.billing_cycle === 'annual';
-              const durationMs = isAnnual ? 365 * 86400000 : 30 * 86400000;
-              await saveSubscription(uid, {
-                plan_id: notes.plan_id || 'starter',
-                billing_cycle: isAnnual ? 'annual' : 'monthly',
-                status: 'active',
-                current_period_start: now,
-                current_period_end: now + durationMs,
-                pending_plan_id: null,
-                updated_at: now,
-              });
-            }
-          } catch (creditErr) {
-            await releasePayment(paymentId).catch(() => {});
-            throw creditErr;
-          }
-        }
-      }
-
+      const rawBody: Buffer = (req as any).rawBody || Buffer.from(JSON.stringify(req.body || {}));
+      const result = await processWebhook(paymentsCfg, {
+        rawBody,
+        signature: req.headers['x-razorpay-signature'] as string | undefined,
+        eventId: req.headers['x-razorpay-event-id'] as string | undefined,
+      });
+      // Always 200 once verified & handled/ignored, so Razorpay stops retrying
+      console.log(`[Billing Webhook] ${result.status}${result.detail ? ` (${result.detail})` : ''}`);
       return res.json({ status: 'ok' });
     } catch (err: any) {
+      if (err instanceof PaymentError) return res.status(err.status).json({ error: err.message });
       console.error('[Billing Webhook] Error:', err);
-      return res.status(500).json({ error: 'Webhook processing error' });
+      return res.status(500).json({ error: 'Webhook processing error' }); // Razorpay will retry
     }
   });
 

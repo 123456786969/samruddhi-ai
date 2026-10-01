@@ -17,9 +17,11 @@ export interface PlanDefinition {
   features: string[];
 }
 
-export const GST_RATE = 0.18;
+export const GST_PERCENT = 18;
+export const GST_RATE = GST_PERCENT / 100;
 export const OVERAGE_VOICE_PER_MIN = 9;
-export const FOUNDING_PARTNER_DISCOUNT = 0.40; // 40% off, locked for 12 months
+export const FOUNDING_PARTNER_DISCOUNT_PERCENT = 40; // 40% off, locked for 12 months
+export const FOUNDING_PARTNER_DISCOUNT = FOUNDING_PARTNER_DISCOUNT_PERCENT / 100;
 
 export interface VoiceTopUpPack {
   id: string;
@@ -95,48 +97,73 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
 };
 
 /**
- * Calculates subtotal, 18% GST, and total for a plan with rounding to whole numbers.
+ * PRICING - single source of truth.
+ *
+ * List prices live in PLANS / VOICE_TOP_UP_PACKS (whole rupees, before GST). All charging maths is
+ * done in INTEGER PAISE so no floating-point rupee amounts ever reach Razorpay or the database:
+ *   subtotal = list price (minus the founding-partner discount, if any)
+ *   gst      = 18% of subtotal, rounded to the nearest paise
+ *   total    = subtotal + gst
+ * The server uses the *Paise functions to create orders and to check what was actually paid.
+ * The rupee helpers below are for display only and are derived from the same numbers.
  */
+export interface PricePaise {
+  subtotalPaise: number;
+  gstPaise: number;
+  totalPaise: number;
+}
+
+const rupeesToPaise = (rupees: number) => Math.round(rupees * 100);
+
+function withGst(subtotalPaise: number): PricePaise {
+  const gstPaise = Math.round((subtotalPaise * GST_PERCENT) / 100);
+  return { subtotalPaise, gstPaise, totalPaise: subtotalPaise + gstPaise };
+}
+
+export function planPricePaise(
+  planId: PlanId | string,
+  cycle: BillingCycle = 'monthly',
+  isFoundingPartner: boolean = false
+): PricePaise | null {
+  const plan = PLANS[planId as PlanId];
+  if (!plan) return null;
+  const listPaise = rupeesToPaise(cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice);
+  // list price is a whole number of rupees, so this is an exact integer
+  const subtotalPaise = isFoundingPartner
+    ? Math.round((listPaise * (100 - FOUNDING_PARTNER_DISCOUNT_PERCENT)) / 100)
+    : listPaise;
+  return withGst(subtotalPaise);
+}
+
+export function topUpPricePaise(packId: string): (PricePaise & { pack: VoiceTopUpPack }) | null {
+  const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === packId);
+  if (!pack) return null;
+  return { ...withGst(rupeesToPaise(pack.price)), pack };
+}
+
+const toRupees = (paise: number) => paise / 100;
+
+/** Display helper: subtotal, GST and total in rupees (may contain paise), derived from the paise maths. */
 export function priceFor(
   planId: PlanId | string,
   cycle: BillingCycle = 'monthly',
   isFoundingPartner: boolean = false
 ): { subtotal: number; gst: number; total: number } {
-  const plan = PLANS[planId as PlanId];
-  if (!plan) {
-    return { subtotal: 0, gst: 0, total: 0 };
-  }
-
-  let basePrice = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
-
-  if (isFoundingPartner) {
-    basePrice = Math.round(basePrice * (1 - FOUNDING_PARTNER_DISCOUNT));
-  }
-
-  const subtotal = Math.round(basePrice);
-  const gst = Math.round(subtotal * GST_RATE);
-  const total = subtotal + gst;
-
-  return { subtotal, gst, total };
+  const p = planPricePaise(planId, cycle, isFoundingPartner);
+  if (!p) return { subtotal: 0, gst: 0, total: 0 };
+  return { subtotal: toRupees(p.subtotalPaise), gst: toRupees(p.gstPaise), total: toRupees(p.totalPaise) };
 }
 
-/**
- * Calculates subtotal, 18% GST, and total for a voice top-up pack.
- */
+/** Display helper for voice top-up packs, derived from the paise maths. */
 export function priceForTopUp(packId: string): {
   subtotal: number;
   gst: number;
   total: number;
   pack?: VoiceTopUpPack;
 } {
-  const pack = VOICE_TOP_UP_PACKS.find((p) => p.id === packId);
-  if (!pack) {
-    return { subtotal: 0, gst: 0, total: 0 };
-  }
-  const subtotal = pack.price;
-  const gst = Math.round(subtotal * GST_RATE);
-  const total = subtotal + gst;
-  return { subtotal, gst, total, pack };
+  const p = topUpPricePaise(packId);
+  if (!p) return { subtotal: 0, gst: 0, total: 0 };
+  return { subtotal: toRupees(p.subtotalPaise), gst: toRupees(p.gstPaise), total: toRupees(p.totalPaise), pack: p.pack };
 }
 
 /**
@@ -146,6 +173,7 @@ export function formatINR(amount: number): string {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    maximumFractionDigits: 0,
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+    maximumFractionDigits: 2,
   }).format(amount);
 }

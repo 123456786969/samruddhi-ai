@@ -373,6 +373,47 @@ export async function saveSubscription(uid: string, data: any): Promise<void> {
   await db().collection('subscriptions').doc(uid).set({ ...data, updated_at: Date.now() }, { merge: true });
 }
 
+const CYCLE_MS = { monthly: 30 * 86400000, annual: 365 * 86400000 } as const;
+
+/**
+ * Activates or extends a paid plan (called only after a payment has been verified server-side).
+ *  - no active plan (new or expired): starts now
+ *  - still active: the paid cycle is ADDED to the current period end, so paying early never loses
+ *    the remaining days (and the cycle anchor, current_period_start, does not move)
+ *  - a different plan while active: the new plan applies immediately and the cycle is added to the
+ *    remaining time (proration for up/downgrades is a later phase)
+ * Runs in a transaction so concurrent payments stack correctly.
+ */
+export async function applyPlanPayment(
+  uid: string,
+  planId: PlanId,
+  cycle: 'monthly' | 'annual',
+  now = Date.now()
+): Promise<{ current_period_start: number; current_period_end: number }> {
+  const ref = db().collection('subscriptions').doc(uid);
+  return db().runTransaction(async (tx: any) => {
+    const snap = await tx.get(ref);
+    const cur = snap.exists ? snap.data() : {};
+    const stillActive = cur.status === 'active' && cur.current_period_end && cur.current_period_end > now;
+    const start = stillActive ? cur.current_period_start || now : now;
+    const end = (stillActive ? cur.current_period_end : now) + CYCLE_MS[cycle];
+    tx.set(
+      ref,
+      {
+        plan_id: planId,
+        billing_cycle: cycle,
+        status: 'active',
+        current_period_start: start,
+        current_period_end: end,
+        pending_plan_id: null,
+        updated_at: now,
+      },
+      { merge: true }
+    );
+    return { current_period_start: start, current_period_end: end };
+  });
+}
+
 /**
  * Credits extra voice minutes atomically (safe against concurrent top-ups).
  */
