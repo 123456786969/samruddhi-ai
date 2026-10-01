@@ -1,3 +1,4 @@
+import { apiFetch } from '../lib/api';
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Building2, User, KeyRound, RefreshCw, CheckCircle2, Sparkles, ShieldCheck, Mail, ArrowRight, ExternalLink, AlertTriangle } from 'lucide-react';
@@ -19,10 +20,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
   const [isPopupBlocked, setIsPopupBlocked] = useState(false);
   const [keepLoggedIn, setKeepLoggedIn] = useState(true);
   
-  // Direct Email Login State
-  const [directEmail, setDirectEmail] = useState('');
-  const [showEmailInput, setShowEmailInput] = useState(false);
-
   // OTP data
   const [enteredOtp, setEnteredOtp] = useState('');
   const [simulatedOtp, setSimulatedOtp] = useState<string | null>(null);
@@ -51,17 +48,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
       setName(user.displayName || '');
       setEmail(normalizedEmail);
       
-      // Call backend to send OTP (backend generates it securely)
-      const response = await fetch('/api/send-otp', {
+      // The server sends the code to the verified email on the signed-in account
+      const data = await apiFetch<{ success: boolean; simulated?: boolean; devOtp?: string }>('/api/send-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: normalizedEmail })
+        body: JSON.stringify({}),
       });
-      
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to send OTP');
-      }
 
       // If simulated / dev OTP (only when SMTP is unconfigured)
       if (data.simulated && data.devOtp) {
@@ -97,49 +88,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
     }
   };
 
-  const handleDirectEmailSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanEmail = directEmail.trim().toLowerCase();
-    if (!cleanEmail) return;
-
-    try {
-      setLoading(true);
-      setError(null);
-      setIsPopupBlocked(false);
-
-      const emailUid = `usr_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 20)}`;
-      setUid(emailUid);
-      setEmail(cleanEmail);
-      setName(cleanEmail.split('@')[0]);
-
-      const response = await fetch('/api/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail })
-      });
-      
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to send OTP');
-      }
-
-      if (data.simulated && data.devOtp) {
-        setSimulatedOtp(data.devOtp);
-        setEnteredOtp(data.devOtp);
-      } else {
-        setSimulatedOtp(null);
-        setEnteredOtp('');
-      }
-
-      setStep('otp');
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'Failed to send verification code.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleInstantDemoLogin = async () => {
     // Authenticate through Google OAuth to acquire a valid Firestore authentication session
     await handleGoogleSignIn();
@@ -150,12 +98,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
     setResending(true);
     setError(null);
     try {
-      const response = await fetch('/api/send-otp', {
+      const data = await apiFetch<{ success: boolean; simulated?: boolean; devOtp?: string }>('/api/send-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim().toLowerCase() })
+        body: JSON.stringify({}),
       });
-      const data = await response.json();
       if (data.simulated && data.devOtp) {
         setSimulatedOtp(data.devOtp);
         setEnteredOtp(data.devOtp);
@@ -184,27 +130,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
       setLoading(true);
       setError(null);
       
-      // Call backend to verify OTP
-      const response = await fetch('/api/verify-otp', {
+      // The server checks the code for the signed-in user and records it on their account
+      await apiFetch('/api/verify-otp', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          email: email.trim().toLowerCase(), 
-          otp: cleanOtp
-        })
+        body: JSON.stringify({ otp: cleanOtp }),
       });
-
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'Invalid verification code.');
-      }
-      
-      // Mark OTP as verified locally
-      if (keepLoggedIn) {
-        localStorage.setItem('otpVerified', 'true');
-      } else {
-        sessionStorage.setItem('otpVerified', 'true');
-      }
+      // Pick up the new "otp verified" claim on the ID token
+      await auth.currentUser?.getIdToken(true);
 
       // Check if user already exists in Firestore
       if (!uid) throw new Error("No UID found");
@@ -243,10 +175,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
           displayName: userName,
         });
         if (keepLoggedIn) {
-          localStorage.setItem('otpVerified', 'true');
           localStorage.setItem('demoUser', userDataToStore);
         } else {
-          sessionStorage.setItem('otpVerified', 'true');
           sessionStorage.setItem('demoUser', userDataToStore);
         }
 
@@ -317,10 +247,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
         displayName: name,
       });
       if (keepLoggedIn) {
-        localStorage.setItem('otpVerified', 'true');
         localStorage.setItem('demoUser', userDataToStore);
       } else {
-        sessionStorage.setItem('otpVerified', 'true');
         sessionStorage.setItem('demoUser', userDataToStore);
       }
 
@@ -416,45 +344,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
                     <span>{loading ? 'Connecting...' : 'Continue with Google'}</span>
                   </button>
-
-                  <div className="relative flex py-2 items-center">
-                    <div className="flex-grow border-t border-teal-900/60"></div>
-                    <span className="flex-shrink mx-3 text-gray-500 text-xs uppercase tracking-wider font-semibold">Or</span>
-                    <div className="flex-grow border-t border-teal-900/60"></div>
-                  </div>
-
-                  {!showEmailInput ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowEmailInput(true)}
-                      className="w-full py-2.5 px-4 bg-teal-950/60 hover:bg-teal-900/50 text-teal-200 border border-teal-800/60 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                    >
-                      <Mail className="w-4 h-4 text-amber-400" />
-                      <span>Sign in with Email OTP</span>
-                    </button>
-                  ) : (
-                    <form onSubmit={handleDirectEmailSubmit} className="space-y-2 text-left">
-                      <label className="block text-xs font-semibold text-gray-300">Enter your email</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="email"
-                          required
-                          value={directEmail}
-                          onChange={(e) => setDirectEmail(e.target.value)}
-                          placeholder="agent@realty.com"
-                          className="flex-1 px-3 py-2 bg-black/60 border border-teal-800/70 rounded-xl text-white text-sm focus:outline-none focus:ring-1 focus:ring-amber-400"
-                        />
-                        <button
-                          type="submit"
-                          disabled={loading || !directEmail.trim()}
-                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition-all disabled:opacity-50 flex items-center gap-1 shrink-0 cursor-pointer"
-                        >
-                          <span>Send Code</span>
-                          <ArrowRight className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </form>
-                  )}
 
                   <button
                     type="button"

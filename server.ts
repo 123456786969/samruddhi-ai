@@ -6,9 +6,12 @@ import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import nodemailer from 'nodemailer';
 import Razorpay from 'razorpay';
+import { issueOtp, checkOtp, discardOtp } from './src/server/otp';
+import { OTP_CLAIM } from './src/shared/otp';
 import {
   requireAuth,
   requireAdmin,
+  requireIdentity,
   getPlanStatus,
   recordLeadCreated,
   recordVoiceMinutes,
@@ -83,70 +86,54 @@ async function startServer() {
     String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
   const PORT = Number(process.env.PORT) || 3000;
 
-  // OTPs live in Firestore (collection "otp_codes", server-only via default-deny rules).
-  // Only a salted hash of the code is stored; the document id is a hash of the email.
-  const OTP_TTL_MS = 10 * 60 * 1000;
-  const otpDocRef = (email: string) =>
-    adminDb.collection('otp_codes').doc(crypto.createHash('sha256').update(email).digest('hex'));
-  const hashOtp = (email: string, otp: string) =>
-    crypto.createHash('sha256').update(`${email}:${otp}`).digest('hex');
-
-  // OTP Sending Route
-  app.post('/api/send-otp', rateLimit('send-otp', 10, 10 * 60 * 1000), async (req, res) => {
-    try {
-      const rawEmail = req.body?.email;
-      if (!rawEmail) {
-        return res.status(400).json({ error: 'Email is required' });
-      }
-
-      const email = rawEmail.toString().trim().toLowerCase();
-      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        return res.status(400).json({ error: 'A valid email address is required' });
-      }
-
-      const previous = (await otpDocRef(email).get()).data();
-      if (previous && Date.now() - previous.generatedAt < 30 * 1000) {
-        return res.status(429).json({ error: 'Please wait 30 seconds before requesting another code.' });
-      }
-
-      // Generate a fresh, cryptographically secure randomized 6-digit OTP on EVERY request
-      const otp = crypto.randomInt(100000, 1000000).toString();
-      const now = Date.now();
-      const refId = crypto.randomBytes(3).toString('hex').toUpperCase();
-
-      // Persist the hashed code (valid for 10 minutes), replacing any previous one
-      await otpDocRef(email).set({ otpHash: hashOtp(email, otp), expiresAt: now + OTP_TTL_MS, generatedAt: now, attempts: 0 });
-
-      const smtpEmail = process.env.SMTP_EMAIL;
-      const smtpPassword = process.env.SMTP_PASSWORD;
-
-      if (!smtpEmail || !smtpPassword) {
-        if (IS_PROD) {
-          await otpDocRef(email).delete();
-          console.error('[OTP Server] SMTP credentials are not configured; cannot deliver OTP in production.');
-          return res.status(503).json({ error: 'Email delivery is not configured. Please contact support.' });
-        }
-        console.warn(`[OTP Sim] SMTP credentials not set. Simulated randomized OTP for ${email} is: ${otp}`);
-        return res.json({ success: true, simulated: true, devOtp: otp });
-      }
-
+  // OTP login second step. Codes are bound to the signed-in Firebase user (the email always comes
+  // from the verified ID token, never from the request body), stored as an HMAC in Firestore,
+  // expire after 10 minutes, work once, and die after 5 wrong attempts. See src/server/otp.ts.
+  app.post(
+    '/api/send-otp',
+    rateLimit('send-otp', 20, 10 * 60 * 1000),
+    requireIdentity,
+    async (req: AuthenticatedRequest, res) => {
       try {
-        const transporter = nodemailer.createTransport({
-          service: 'gmail',
-          auth: {
-            user: smtpEmail,
-            pass: smtpPassword,
-          },
-        });
+        const uid = req.user!.uid;
+        const email = String(req.user!.email || '').trim().toLowerCase();
+        if (!email || req.user!.email_verified === false) {
+          return res.status(400).json({ error: 'Your account needs a verified email address.' });
+        }
 
-        const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const issued = await issueOtp({ uid, email, ip: req.ip || 'unknown' });
+        if (!issued.allowed) {
+          return res.status(429).json({ error: 'Too many verification requests. Please try again in a few minutes.' });
+        }
+        const code = issued.code;
+        const refId = crypto.randomBytes(3).toString('hex').toUpperCase();
 
-        console.log(`[OTP Server] Sending OTP email to ${email} (Ref: ${refId})...`);
-        const info = await transporter.sendMail({
-          from: `"Samruddhi AI Security" <${smtpEmail}>`,
-          to: email,
-          subject: `Your Login Verification Code: ${otp} - Samruddhi AI [#${refId}]`,
-          text: `Your login verification code is: ${otp}\n\nGenerated at: ${timeStr} IST\nReference ID: REF-${refId}\n\nThis randomized code is single-use and will expire in 10 minutes. If you did not request this login code, you can safely ignore this email.`,
+        const smtpEmail = process.env.SMTP_EMAIL;
+        const smtpPassword = process.env.SMTP_PASSWORD;
+
+        if (!smtpEmail || !smtpPassword) {
+          if (IS_PROD) {
+            await discardOtp(uid, email);
+            console.error('[OTP Server] SMTP credentials are not configured; cannot deliver OTP in production.');
+            return res.status(503).json({ error: 'Email delivery is not configured. Please contact support.' });
+          }
+          // Development only: hand the code back so the flow can be tested without SMTP
+          console.warn(`[OTP Sim] SMTP not configured. Development OTP for ${email}: ${code}`);
+          return res.json({ success: true, simulated: true, devOtp: code });
+        }
+
+        try {
+          const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: { user: smtpEmail, pass: smtpPassword },
+          });
+          const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+          await transporter.sendMail({
+            from: `"Samruddhi AI Security" <${smtpEmail}>`,
+            to: email,
+            subject: `Your Login Verification Code: ${code} - Samruddhi AI [#${refId}]`,
+            text: `Your login verification code is: ${code}\n\nGenerated at: ${timeStr} IST\nReference ID: REF-${refId}\n\nThis code is single-use and will expire in 10 minutes. If you did not request this login code, you can safely ignore this email.`,
           html: `
             <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px 24px; background-color: #04100c; color: #f1f5f9; border-radius: 16px; border: 1px solid #134e4a;">
               <div style="text-align: center; margin-bottom: 24px;">
@@ -162,7 +149,7 @@ async function startServer() {
                   Single-Use Security Code
                 </div>
                 <div style="font-family: 'Courier New', Courier, monospace; font-size: 44px; font-weight: 900; letter-spacing: 12px; color: #34d399; margin: 10px 0; padding-left: 12px;">
-                  ${otp}
+                  ${code}
                 </div>
                 <div style="color: #6ee7b7; font-size: 12px; font-weight: 600; margin-top: 8px;">
                   Expires in 10 minutes • Never share this code
@@ -191,77 +178,48 @@ async function startServer() {
               </p>
             </div>
           `
-        });
-        console.log('[OTP Server] Dynamic email delivered successfully. Message ID:', info.messageId);
-        return res.json({ success: true, simulated: false });
-      } catch (mailErr: any) {
-        console.error('[OTP Server] Mail delivery failed:', mailErr.message);
-        await otpDocRef(email).delete().catch(() => {});
-        return res.status(502).json({ error: 'Could not send the verification email. Please try again.' });
-      }
-    } catch (err: any) {
-      console.error('[OTP Server] Final Error sending OTP:', err);
-      res.status(500).json({ error: 'Failed to send OTP' });
-    }
-  });
-
-  // OTP Verification Route
-  app.post('/api/verify-otp', rateLimit('verify-otp', 30, 10 * 60 * 1000), async (req, res) => {
-    try {
-      const rawEmail = req.body?.email;
-      const rawOtp = req.body?.otp;
-      if (!rawEmail || !rawOtp) {
-        return res.status(400).json({ error: 'Email and verification code are required' });
-      }
-
-      const email = rawEmail.toString().trim().toLowerCase();
-      const enteredOtp = rawOtp.toString().trim();
-      const ref = otpDocRef(email);
-
-      // Transaction keeps the attempt counter and single-use delete race-free
-      const outcome: 'ok' | 'missing' | 'expired' | 'locked' | 'invalid' = await adminDb.runTransaction(async (tx: any) => {
-        const snap = await tx.get(ref);
-        if (!snap.exists) return 'missing';
-        const record = snap.data();
-
-        if (Date.now() > record.expiresAt) {
-          tx.delete(ref);
-          return 'expired';
-        }
-
-        const attempts = (record.attempts || 0) + 1;
-        if (attempts > 5) {
-          tx.delete(ref);
-          return 'locked';
-        }
-
-        const a = Buffer.from(record.otpHash);
-        const b = Buffer.from(hashOtp(email, enteredOtp));
-        if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
-          tx.delete(ref); // single-use
-          return 'ok';
-        }
-        tx.update(ref, { attempts });
-        return 'invalid';
-      });
-
-      switch (outcome) {
-        case 'ok':
+          });
+          console.log(`[OTP Server] Verification email sent (Ref: ${refId}).`);
           return res.json({ success: true });
-        case 'missing':
-          return res.status(400).json({ error: 'No active verification code found for this email. Please click Resend Code to receive a fresh code.' });
-        case 'expired':
-          return res.status(400).json({ error: 'Verification code has expired. Please click Resend Code to receive a fresh code in your mail.' });
-        case 'locked':
-          return res.status(429).json({ error: 'Too many incorrect attempts. Please request a new code.' });
-        default:
-          return res.status(400).json({ error: 'Invalid verification code. Please check the code sent to your email.' });
+        } catch (mailErr: any) {
+          console.error('[OTP Server] Mail delivery failed:', mailErr.message);
+          await discardOtp(uid, email).catch(() => {});
+          return res.status(502).json({ error: 'Could not send the verification email. Please try again.' });
+        }
+      } catch (err: any) {
+        console.error('[OTP Server] Error sending OTP:', err);
+        return res.status(500).json({ error: 'Failed to send verification code' });
       }
-    } catch (err: any) {
-      console.error('[OTP Server] Error verifying OTP:', err);
-      res.status(500).json({ error: 'Failed to verify OTP' });
     }
-  });
+  );
+
+  app.post(
+    '/api/verify-otp',
+    rateLimit('verify-otp', 30, 10 * 60 * 1000),
+    requireIdentity,
+    async (req: AuthenticatedRequest, res) => {
+      try {
+        const uid = req.user!.uid;
+        const email = String(req.user!.email || '').trim().toLowerCase();
+        const code = String(req.body?.otp ?? '').trim();
+
+        // One generic message for every failure (no code, expired, wrong, locked)
+        const invalid = () => res.status(400).json({ error: 'Invalid or expired verification code.' });
+        if (!/^\d{6}$/.test(code) || !email) return invalid();
+
+        if (!(await checkOtp({ uid, email, code }))) return invalid();
+
+        // Record the verification on the user's token. The client must refresh its ID token
+        // (getIdToken(true)) to receive the new claim.
+        const existing = (await adminAuth.getUser(uid)).customClaims || {};
+        await adminAuth.setCustomUserClaims(uid, { ...existing, [OTP_CLAIM]: Date.now() });
+        return res.json({ success: true, refreshToken: true });
+      } catch (err: any) {
+        console.error('[OTP Server] Error verifying OTP:', err);
+        return res.status(500).json({ error: 'Failed to verify code' });
+      }
+    }
+  );
 
   // ==========================================
   // REAL-TIME ADMIN LEAD & LOGIN NOTIFICATIONS

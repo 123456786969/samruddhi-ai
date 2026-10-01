@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { auth, db } from '../../lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { isOtpClaimValid } from '../../shared/otp';
 import { doc, getDoc } from 'firebase/firestore';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import {
@@ -93,6 +94,22 @@ const DashboardInnerLayout: React.FC = () => {
         setLoading(false);
         navigate('/', { replace: true });
         return;
+      }
+
+      // A Google sign-in alone is not enough: the email verification code step must have been
+      // completed (the server records it on the ID token and enforces it on every API call).
+      if (import.meta.env.PROD) {
+        try {
+          const tokenResult = await currentUser.getIdTokenResult();
+          if (!isOtpClaimValid(tokenResult.claims)) {
+            await signOut(auth); // triggers this listener again with no user -> back to the landing page
+            return;
+          }
+        } catch (err) {
+          console.warn('Could not read verification status:', err);
+          await signOut(auth);
+          return;
+        }
       }
 
       setUser(currentUser);

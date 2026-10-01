@@ -4,6 +4,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { isOtpClaimValid } from '../shared/otp';
 import { PLANS, PlanId, priceFor, priceForTopUp, VoiceTopUpPack, VOICE_TOP_UP_PACKS } from '../shared/plans';
 
 // Load Firebase configuration
@@ -21,7 +22,7 @@ try {
 if (!getApps().length) {
   try {
     initializeApp({
-      projectId: firebaseConfig.projectId || 'xerotic-destiny-06rpq',
+      projectId: process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || 'xerotic-destiny-06rpq',
     });
   } catch (e) {
     console.warn('[Billing Server] Firebase Admin app init notice:', e);
@@ -91,9 +92,10 @@ export async function verifyBearerToken(authHeader: string | undefined): Promise
 }
 
 /**
- * requireAuth middleware: Verifies the Firebase ID token in the Authorization header.
+ * requireIdentity: verifies the Firebase ID token only (who is calling).
+ * Used by the OTP routes themselves, which must work before OTP verification is complete.
  */
-export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function requireIdentity(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({
@@ -111,6 +113,30 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   }
   req.user = user;
   return next();
+}
+
+/**
+ * Whether the OTP second step is enforced. Always on in production; can be switched off
+ * for local development with OTP_REQUIRED=false.
+ */
+export function isOtpEnforced(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.OTP_REQUIRED !== 'false';
+}
+
+/**
+ * requireAuth middleware: valid Firebase ID token AND a recent server-recorded OTP verification
+ * (custom claim set by /api/verify-otp). Without it the login is not considered complete.
+ */
+export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  return requireIdentity(req, res, () => {
+    if (isOtpEnforced() && !isOtpClaimValid(req.user as any)) {
+      return res.status(403).json({
+        error: 'Verification required: please complete the email verification code step.',
+        code: 'OTP_REQUIRED',
+      });
+    }
+    return next();
+  });
 }
 
 /**

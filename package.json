@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.cjs",
     "lint": "tsc --noEmit",
-    "test": "firebase emulators:exec --only firestore --project demo-samruddhi \"tsx --test tests/*.test.ts\"",
+    "test": "firebase emulators:exec --only firestore,auth --project demo-samruddhi \"tsx --test tests/*.test.ts\"",
     "migrate:local-stores": "tsx scripts/migrate-local-stores.ts"
   },
   "dependencies": {
