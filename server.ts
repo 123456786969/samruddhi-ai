@@ -1,3 +1,4 @@
+process.env.DISABLE_HMR = 'true';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -1472,42 +1473,96 @@ Keep your answers concise, professional, and conversational. Use markdown for re
         }
       }
 
-      // 3. Fallback to Standard TTS
+      // 3. Fallback to Standard TTS with intelligent sentence & phrase chunking
       try {
         const ttsLang = langCode;
-        const fallbackUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${ttsLang}&q=${encodeURIComponent(rawText)}`;
-        
-        const response = await fetch(fallbackUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept': '*/*'
-          }
-        });
-        
-        if (response.ok) {
-          const arrayBuffer = await response.arrayBuffer();
-          const mp3Buffer = Buffer.from(arrayBuffer);
+        console.log('[TTS Route] Processing request for lang:', ttsLang, 'text length:', rawText.length);
 
+        // Helper to split text into safe phrases under 80 characters without cutting words
+        const splitTextIntoTtsChunks = (txt: string, maxLen = 80): string[] => {
+          const parts = txt.split(/([।!?—–.,\n]+)/);
+          const chunks: string[] = [];
+          let cur = '';
+          for (const p of parts) {
+            if (cur.length + p.length <= maxLen) {
+              cur += p;
+            } else {
+              if (cur.trim()) chunks.push(cur.trim());
+              cur = p;
+            }
+          }
+          if (cur.trim()) chunks.push(cur.trim());
+
+          const finalChunks: string[] = [];
+          for (const c of chunks) {
+            if (c.length <= maxLen) {
+              finalChunks.push(c);
+            } else {
+              const words = c.split(' ');
+              let sub = '';
+              for (const w of words) {
+                if ((sub ? sub.length + 1 : 0) + w.length <= maxLen) {
+                  sub += (sub ? ' ' : '') + w;
+                } else {
+                  if (sub) finalChunks.push(sub);
+                  sub = w;
+                }
+              }
+              if (sub) finalChunks.push(sub);
+            }
+          }
+          return finalChunks.filter(c => c.trim().length > 0);
+        };
+
+        const textChunks = splitTextIntoTtsChunks(rawText, 80);
+        const audioBuffers: Buffer[] = [];
+
+        for (const chunk of textChunks) {
+          let cleanChunk = chunk.replace(/\*/g, '');
+          if (ttsLang === 'kn') cleanChunk = cleanChunk.replace(/₹/g, 'ರೂಪಾಯಿ ');
+          else if (ttsLang === 'hi') cleanChunk = cleanChunk.replace(/₹/g, 'रुपये ');
+          else if (ttsLang === 'ta') cleanChunk = cleanChunk.replace(/₹/g, 'ரூபாய் ');
+          else if (ttsLang === 'te') cleanChunk = cleanChunk.replace(/₹/g, 'రూపాయలు ');
+          else if (ttsLang === 'mr') cleanChunk = cleanChunk.replace(/₹/g, 'रुपये ');
+          else if (ttsLang === 'ml') cleanChunk = cleanChunk.replace(/₹/g, 'രൂപ ');
+          else cleanChunk = cleanChunk.replace(/₹/g, 'Rupees ');
+
+          const chunkUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${encodeURIComponent(ttsLang)}&q=${encodeURIComponent(cleanChunk)}`;
+          const chunkRes = await fetch(chunkUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+              'Accept': '*/*'
+            }
+          });
+
+          if (chunkRes.ok) {
+            const arrBuf = await chunkRes.arrayBuffer();
+            audioBuffers.push(Buffer.from(arrBuf));
+          }
+        }
+
+        if (audioBuffers.length > 0) {
+          const combinedMp3 = Buffer.concat(audioBuffers);
           if (audioCache.size > 200) {
             const firstKey = audioCache.keys().next().value;
             if (firstKey) audioCache.delete(firstKey);
           }
-          audioCache.set(cacheKey, { buffer: mp3Buffer, contentType: 'audio/mpeg' });
+          audioCache.set(cacheKey, { buffer: combinedMp3, contentType: 'audio/mpeg' });
 
           res.setHeader('Content-Type', 'audio/mpeg');
           res.setHeader('Cache-Control', 'public, max-age=86400');
-          return res.send(mp3Buffer);
+          return res.send(combinedMp3);
         }
-      } catch {
+      } catch (ttsErr: any) {
+        console.warn('[Server TTS] Google TTS chunk fetch error:', ttsErr?.message);
         // Fall through to synthetic acoustic waveform fallback
       }
 
       // 4. Fallback: Generate Acoustic Voice Cadence Tone (Guarantees 200 OK & playback in any sandbox)
       const toneWav = generateSyntheticToneWav(Math.max(1.8, rawText.split(' ').length * 0.35), 24000, isBot ? 280 : 190);
-      audioCache.set(cacheKey, { buffer: toneWav, contentType: 'audio/wav' });
-
+      // Notice: Do NOT permanently cache synthetic tones so retries can get real speech
       res.setHeader('Content-Type', 'audio/wav');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Cache-Control', 'no-cache');
       return res.send(toneWav);
     } catch (err: any) {
       console.error('TTS Route error:', err?.message || err);
@@ -1521,7 +1576,10 @@ Keep your answers concise, professional, and conversational. Use markdown for re
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

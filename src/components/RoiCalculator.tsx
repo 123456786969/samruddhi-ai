@@ -1,247 +1,278 @@
 import React, { useState } from 'react';
-import { Calculator, TrendingUp, Sparkles, CheckCircle, ArrowRight, DollarSign, Building2, HelpCircle, Layers } from 'lucide-react';
-import { PropertyGrowthRoiVisualizer } from './dashboard/PropertyGrowthRoiVisualizer';
+import { 
+  ArrowRight, 
+  Building2, 
+  Flame, 
+  Zap, 
+  Sparkles 
+} from 'lucide-react';
 
 interface RoiCalculatorProps {
   onOpenDemoWithLeads: (leads: number) => void;
 }
 
 export const RoiCalculator: React.FC<RoiCalculatorProps> = ({ onOpenDemoWithLeads }) => {
-  const [calcMode, setCalcMode] = useState<'leads' | 'property'>('leads');
-  const [monthlyLeads, setMonthlyLeads] = useState<number>(400);
-  const [commissionLakhs, setCommissionLakhs] = useState<number>(2.5); // ₹2.5 Lakhs average commission per deal
-  const [leadsLostPercent, setLeadsLostPercent] = useState<number>(50); // 50% leads lost due to slow follow-up
+  // Fine-grained state with granular step control
+  const [monthlyLeads, setMonthlyLeads] = useState<number>(450);
+  const [commissionLakhs, setCommissionLakhs] = useState<number>(3.0); // ₹3 Lakhs avg commission per deal
+  const [leadsLostPercent, setLeadsLostPercent] = useState<number>(50); // 50% industry benchmark leakage
+  const leadSourceCost = 850; // Average CPL in INR on Meta/Google
 
-  // Calculations
-  // Lost leads per month
-  const lostLeadsMonthly = Math.round(monthlyLeads * (leadsLostPercent / 100));
-  
-  // With Samruddhi AI, we recover ~40% of those lost leads through instant <10s WhatsApp + Multilingual AI Voice
-  const recoveredLeadsMonthly = Math.round(lostLeadsMonthly * 0.40);
-  
-  // Assuming 10% site visit & deal conversion on recovered leads
-  const extraDealsMonthly = Number((recoveredLeadsMonthly * 0.08).toFixed(1));
-  const extraDealsAnnual = Number((extraDealsMonthly * 12).toFixed(1));
+  // Mathematical Projections
+  // 1. Monthly Leads that leak out / drop off because follow-up took >15 minutes
+  const monthlyLeakedLeads = Math.round(monthlyLeads * (leadsLostPercent / 100));
+  const annualLeakedLeads = monthlyLeakedLeads * 12;
 
-  // Recovered revenue per year in Lakhs & Crores
-  const annualRecoveredLakhs = Math.round(extraDealsAnnual * commissionLakhs);
+  // 2. Wasted Monthly Ad Spend burning on leaked leads
+  const monthlyWastedAdSpend = monthlyLeakedLeads * leadSourceCost;
+
+  // 3. Autonomous Instant Recovery (Samruddhi AI calls within <15s + sends WhatsApp brochure in 8s)
+  // Conservatively recaptures 42% of otherwise dead leads
+  const monthlyRecoveredLeads = Math.round(monthlyLeakedLeads * 0.42);
+
+  // 4. Recovered weekend site visits (approx. 28% of recaptured high-intent buyers visit site)
+  const monthlySiteVisits = Math.round(monthlyRecoveredLeads * 0.28);
+  const annualSiteVisits = monthlySiteVisits * 12;
+
+  // 5. Additional closed deals resulting from recovered site visits (8.5% conversion on site visits)
+  const monthlyDeals = Number((monthlyRecoveredLeads * 0.085).toFixed(1));
+  const annualDeals = Math.round(monthlyDeals * 12);
+
+  // 6. Annual Recovered Brokerage / Profit Revenue
+  const annualRecoveredLakhs = Math.round(annualDeals * commissionLakhs);
   const annualRecoveredCrores = (annualRecoveredLakhs / 100).toFixed(2);
 
-  // Samruddhi AI estimated monthly cost
-  const estimatedCost = monthlyLeads > 1000 ? 63999 : monthlyLeads > 300 ? 27999 : 11999;
-  const annualCost = estimatedCost * 12;
-  const roiMultiplier = Math.max(8, Math.round((annualRecoveredLakhs * 100000) / annualCost));
+  // 7. Estimated Cost & Multiple
+  const estimatedMonthlyCost = monthlyLeads > 2000 ? 54899 : monthlyLeads > 500 ? 37799 : 6999;
+  const annualCost = estimatedMonthlyCost * 12;
+  const roiMultiplier = Math.max(7, Math.round((annualRecoveredLakhs * 100000) / annualCost));
 
   return (
-    <section id="roi-calculator" className="scroll-mt-28 py-20 bg-transparent relative">
+    <section id="roi-calculator" className="scroll-mt-28 py-16 bg-[#0A0A0A] relative">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Header */}
-        <div className="text-center max-w-3xl mx-auto space-y-4 mb-10">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-teal-950/80 text-teal-200 text-xs font-bold border border-teal-800/80 shadow-md backdrop-blur-md">
-            <Calculator className="w-3.5 h-3.5 text-amber-400" />
-            <span>Interactive Real Estate ROI & Growth Calculators</span>
+        <div className="text-center max-w-3xl mx-auto space-y-3 mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-950/40 border border-rose-500/30 text-rose-400 text-xs font-mono">
+            <Flame className="w-3.5 h-3.5 text-rose-400" />
+            <span>REAL ESTATE LEAD LEAKAGE AUDIT</span>
           </div>
 
-          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-white tracking-tight drop-shadow-md">
-            Calculate Your <span className="text-amber-400">Financial Returns & Growth</span>
+          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-serif font-extrabold text-[#F4F4F5] tracking-tight">
+            Lead Leakage &amp; <span className="italic text-[#D4AF37]">Revenue Recovery</span> Calculator
           </h2>
 
-          <p className="text-base sm:text-lg text-teal-100">
-            Model how Samruddhi AI multiplies brokerage commissions, or simulate long-term compounded wealth and rental appreciation for property investments.
+          <p className="text-sm sm:text-base text-zinc-400 leading-relaxed">
+            Real estate buyer intent drops by 80% after 15 minutes. Calculate how much brokerage commission you are silently losing to delayed follow-ups — and how much Samruddhi AI's &lt;15-second autonomous calling restores.
           </p>
-
-          {/* Calculator Mode Switcher */}
-          <div className="inline-flex p-1.5 bg-black/60 border border-teal-800/70 rounded-2xl gap-2 mt-4 shadow-xl">
-            <button
-              onClick={() => setCalcMode('leads')}
-              className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all ${
-                calcMode === 'leads'
-                  ? 'bg-amber-400 text-gray-950 shadow-md'
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              <TrendingUp className="w-4 h-4" />
-              <span>Brokerage & Ad Lead Recovery</span>
-            </button>
-            <button
-              onClick={() => setCalcMode('property')}
-              className={`px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all ${
-                calcMode === 'property'
-                  ? 'bg-amber-400 text-gray-950 shadow-md'
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              <Building2 className="w-4 h-4" />
-              <span>Property Appreciation & Rental Growth</span>
-            </button>
-          </div>
         </div>
 
-        {calcMode === 'property' ? (
-          <PropertyGrowthRoiVisualizer />
-        ) : (
-          /* Calculator Widget Box */
-          <div className="bg-[#031814]/85 rounded-2xl border border-teal-800/80 shadow-2xl overflow-hidden grid grid-cols-1 lg:grid-cols-12 backdrop-blur-xl">
+        {/* Lead Leakage Interactive Workstation - Seamlessly matching page background */}
+        <div className="bg-[#0A0A0C] rounded-3xl border border-white/[0.08] shadow-2xl overflow-hidden grid grid-cols-1 lg:grid-cols-12">
           
-          {/* Controls Column */}
-          <div className="lg:col-span-7 p-6 sm:p-10 space-y-8 bg-[#020d0a]/90 border-b lg:border-b-0 lg:border-r border-teal-900">
-            <div className="flex items-center justify-between border-b border-teal-900/80 pb-4">
-              <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-amber-400" />
-                <span>Your Lead & Sales Metrics</span>
-              </h3>
-              <span className="text-xs text-teal-300 font-semibold">Adjust sliders to calculate</span>
+          {/* Controls Column (7 Cols) */}
+          <div className="lg:col-span-7 p-6 sm:p-8 lg:p-10 space-y-8 bg-[#0A0A0C] border-b lg:border-b-0 lg:border-r border-white/[0.08]">
+            
+            <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+              <div className="flex items-center gap-2 text-white font-bold text-base sm:text-lg">
+                <Building2 className="w-5 h-5 text-[#D4AF37]" />
+                <span>Campaign &amp; Sales Metrics</span>
+              </div>
+              <span className="text-xs font-mono text-zinc-500">Fine-Grained Sliders (Step ±10)</span>
             </div>
 
-            {/* Slider 1: Monthly Lead Volume */}
+            {/* Metric 1: Monthly Inbound Leads (Step 10 for fine control) */}
             <div className="space-y-3">
-              <div className="flex justify-between items-center text-sm font-bold">
-                <label className="text-white flex items-center gap-1.5">
-                  Leads Per Month
-                  <span className="text-teal-300/70 text-xs font-normal">(Meta & Google Ads)</span>
+              <div className="flex justify-between items-center text-xs sm:text-sm font-semibold">
+                <label className="text-white flex items-center gap-2">
+                  <span>Monthly Inbound Ad Leads</span>
+                  <span className="text-zinc-500 text-xs font-mono">(Meta, Google, 99acres)</span>
                 </label>
-                <span className="text-amber-400 text-lg font-black bg-teal-950 px-3 py-1 rounded-lg border border-teal-800">
-                  {monthlyLeads} Leads / Mo
+                <span className="text-[#D4AF37] font-mono text-base font-bold bg-white/[0.04] px-3.5 py-1 rounded-xl border border-white/[0.08]">
+                  {monthlyLeads.toLocaleString()} Leads / Mo
                 </span>
               </div>
+
               <input
                 type="range"
-                min="50"
-                max="2000"
-                step="50"
+                min="10"
+                max="4000"
+                step="10"
                 value={monthlyLeads}
                 onChange={(e) => setMonthlyLeads(Number(e.target.value))}
-                className="w-full h-2.5 bg-teal-950 rounded-lg appearance-none cursor-pointer accent-amber-400"
+                className="w-full h-2 bg-white/[0.1] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
               />
-              <div className="flex justify-between text-[11px] text-teal-400 font-semibold">
-                <span>50 Leads</span>
-                <span>500 Leads</span>
-                <span>2,000+ Leads</span>
+
+              <div className="flex justify-between text-[11px] text-zinc-500 font-mono">
+                <span>10 Leads</span>
+                <span>1,000 Leads</span>
+                <span>2,500 Leads</span>
+                <span>4,000+ Leads</span>
               </div>
             </div>
 
-            {/* Slider 2: Average Commission Per Deal */}
+            {/* Metric 2: Average Commission Per Booking (Clean, fine-grained control) */}
             <div className="space-y-3">
-              <div className="flex justify-between items-center text-sm font-bold">
-                <label className="text-white flex items-center gap-1.5">
-                  Average Commission / Profit Per Deal
+              <div className="flex justify-between items-center text-xs sm:text-sm font-semibold">
+                <label className="text-white flex items-center gap-2">
+                  <span>Average Commission / Deal Margin</span>
+                  <span className="text-zinc-500 text-xs font-mono">(Net Profit)</span>
                 </label>
-                <span className="text-amber-400 text-lg font-black bg-teal-950 px-3 py-1 rounded-lg border border-teal-800">
-                  ₹{commissionLakhs} Lakhs
+                <span className="text-[#D4AF37] font-mono text-base font-bold bg-white/[0.04] px-3.5 py-1 rounded-xl border border-white/[0.08]">
+                  ₹{commissionLakhs.toFixed(1)} Lakhs
                 </span>
               </div>
+
               <input
                 type="range"
                 min="0.5"
-                max="10"
-                step="0.5"
+                max="20"
+                step="0.1"
                 value={commissionLakhs}
                 onChange={(e) => setCommissionLakhs(Number(e.target.value))}
-                className="w-full h-2.5 bg-teal-950 rounded-lg appearance-none cursor-pointer accent-amber-400"
+                className="w-full h-2 bg-white/[0.1] rounded-lg appearance-none cursor-pointer accent-[#D4AF37]"
               />
-              <div className="flex justify-between text-[11px] text-teal-400 font-semibold">
+
+              <div className="flex justify-between text-[11px] text-zinc-500 font-mono">
                 <span>₹50,000</span>
-                <span>₹2.5 Lakhs</span>
-                <span>₹10 Lakhs+</span>
+                <span>₹5 Lakhs</span>
+                <span>₹10 Lakhs</span>
+                <span>₹20 Lakhs</span>
               </div>
             </div>
 
-            {/* Slider 3: % of Leads Lost Due to Slow Follow-up */}
+            {/* Metric 3: Current Lead Leakage Rate (Granular Step 1%) */}
             <div className="space-y-3">
-              <div className="flex justify-between items-center text-sm font-bold">
-                <label className="text-white flex items-center gap-1.5">
-                  % of Leads Currently Lost / Uncontacted
+              <div className="flex justify-between items-center text-xs sm:text-sm font-semibold">
+                <label className="text-white flex items-center gap-2">
+                  <span className="text-rose-400">Current Lead Leakage Rate</span>
+                  <span className="text-zinc-500 text-xs font-mono">(Uncontacted / Delayed)</span>
                 </label>
-                <span className="text-rose-400 text-lg font-black bg-teal-950 px-3 py-1 rounded-lg border border-teal-800">
-                  {leadsLostPercent}% Leakage
+                <span className="text-rose-400 font-mono text-base font-bold bg-rose-950/30 px-3.5 py-1 rounded-xl border border-rose-500/30">
+                  {leadsLostPercent}% Leaked
                 </span>
               </div>
+
               <input
                 type="range"
-                min="20"
-                max="80"
-                step="5"
+                min="10"
+                max="85"
+                step="1"
                 value={leadsLostPercent}
                 onChange={(e) => setLeadsLostPercent(Number(e.target.value))}
-                className="w-full h-2.5 bg-teal-950 rounded-lg appearance-none cursor-pointer accent-rose-500"
+                className="w-full h-2 bg-white/[0.1] rounded-lg appearance-none cursor-pointer accent-rose-500"
               />
-              <div className="flex justify-between text-[11px] text-teal-400 font-semibold">
-                <span>20% (Low)</span>
-                <span>50% (Industry Average)</span>
-                <span>80% (High Leakage)</span>
+
+              <div className="flex justify-between text-[11px] text-zinc-500 font-mono">
+                <span>10% (Low Loss)</span>
+                <span>50% (Industry Benchmark)</span>
+                <span>85% (Severe Leakage)</span>
               </div>
             </div>
 
-            <div className="p-4 bg-teal-950/80 rounded-xl border border-teal-800/80 text-xs text-teal-200 flex items-center gap-3">
-              <CheckCircle className="w-5 h-5 text-amber-400 shrink-0" />
-              <span>Based on benchmark data from 120+ active real estate developer campaigns in India.</span>
+            {/* The Leakage Diagnostic Strip */}
+            <div className="p-4 rounded-2xl bg-[#0E0E12] border border-white/[0.06] grid grid-cols-2 gap-4 text-xs font-mono">
+              <div className="space-y-1">
+                <span className="text-zinc-400 block text-[11px]">Monthly Leaked Enquiries:</span>
+                <span className="text-rose-400 text-lg font-bold">
+                  {monthlyLeakedLeads} Leads / Mo
+                </span>
+                <span className="text-[10px] text-zinc-500 block">({annualLeakedLeads.toLocaleString()} / year lost)</span>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-zinc-400 block text-[11px]">Wasted Ad Budget Leaking:</span>
+                <span className="text-[#D4AF37] text-lg font-bold">
+                  ₹{(monthlyWastedAdSpend / 100000).toFixed(2)} Lakhs / Mo
+                </span>
+                <span className="text-[10px] text-zinc-500 block">(Burned on cold leads)</span>
+              </div>
             </div>
+
           </div>
 
-          {/* Results Output Column */}
-          <div className="lg:col-span-5 bg-[#020e0c] text-white p-6 sm:p-10 flex flex-col justify-between gap-6 relative border-t lg:border-t-0 lg:border-l border-teal-900">
+          {/* Results Output Column (5 Cols) */}
+          <div className="lg:col-span-5 bg-[#0E0E12] text-white p-6 sm:p-8 lg:p-10 flex flex-col justify-between gap-6 relative border-t lg:border-t-0">
             
             <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-teal-900 pb-3">
-                <span className="text-xs font-mono text-teal-300">ANNUAL RECOVERED REVENUE</span>
-                <span className="text-xs bg-amber-400 text-gray-950 font-bold px-2.5 py-0.5 rounded-full">
-                  {roiMultiplier}x Estimated ROI
+              <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+                <span className="text-xs font-mono uppercase tracking-wider text-zinc-400">
+                  RECOVERED ANNUAL BROKERAGE
+                </span>
+                <span className="text-xs bg-[#D4AF37] text-black font-extrabold px-3 py-0.5 rounded-full shadow-sm">
+                  {roiMultiplier}x Net ROI
                 </span>
               </div>
 
-              {/* Highlight Numbers */}
-              <div className="space-y-4">
-                <div className="bg-teal-950/80 p-4 rounded-xl border border-teal-800/80">
-                  <span className="text-xs text-teal-300 font-semibold block uppercase tracking-wider">
-                    Potential Recovered Revenue / Year
+              {/* Major Value Highlight Card */}
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-[#D4AF37]/15 via-white/[0.02] to-transparent border border-[#D4AF37]/30 space-y-2">
+                <span className="text-xs font-mono uppercase text-[#D4AF37] font-semibold flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-[#D4AF37]" />
+                  <span>Annual Recovered Commission</span>
+                </span>
+                <div className="flex items-baseline justify-between pt-1">
+                  <span className="text-3xl sm:text-4xl lg:text-5xl font-serif font-extrabold text-white tracking-tight">
+                    ₹{annualRecoveredLakhs >= 100 ? `${annualRecoveredCrores} Cr` : `${annualRecoveredLakhs} Lakhs`}
                   </span>
-                  <div className="flex items-baseline justify-between mt-1">
-                    <span className="text-3xl font-black text-amber-400">
-                      ₹{annualRecoveredLakhs >= 100 ? `${annualRecoveredCrores} Cr` : `${annualRecoveredLakhs} Lakhs`}
-                    </span>
-                    <span className="text-xs text-emerald-400 font-bold">/ Year</span>
-                  </div>
-                  <p className="text-[11px] text-teal-200/80 mt-1">
-                    By recovering <strong className="text-white">{recoveredLeadsMonthly} lost leads/mo</strong> with instant WhatsApp & Voice AI.
-                  </p>
+                  <span className="text-xs font-mono text-emerald-400 font-bold">/ Year</span>
+                </div>
+                <p className="text-xs text-zinc-400 leading-relaxed pt-1">
+                  Recapturing <strong className="text-white">{monthlyRecoveredLeads} high-intent leads/mo</strong> via &lt;15-sec instant autonomous calling.
+                </p>
+              </div>
+
+              {/* Secondary Recovered Performance Metrics */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-1">
+                  <span className="text-[10.5px] font-mono text-zinc-400 uppercase block">Extra Site Visits</span>
+                  <span className="text-xl sm:text-2xl font-mono font-bold text-emerald-400 block">
+                    +{annualSiteVisits}
+                  </span>
+                  <span className="text-[10px] text-zinc-500">+{monthlySiteVisits} visits booked / mo</span>
                 </div>
 
-                <div className="bg-teal-950/80 p-4 rounded-xl border border-teal-800/80">
-                  <span className="text-xs text-teal-300 font-semibold block uppercase tracking-wider">
-                    Additional Closed Deals / Year
+                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-1">
+                  <span className="text-[10.5px] font-mono text-zinc-400 uppercase block">Extra Closed Deals</span>
+                  <span className="text-xl sm:text-2xl font-mono font-bold text-[#D4AF37] block">
+                    +{annualDeals} Deals
                   </span>
-                  <div className="flex items-baseline justify-between mt-1">
-                    <span className="text-3xl font-black text-white">
-                      +{extraDealsAnnual} Deals
-                    </span>
-                    <span className="text-xs text-amber-400 font-bold">+{extraDealsMonthly}/mo</span>
-                  </div>
-                  <p className="text-[11px] text-teal-200/80 mt-1">
-                    At ₹{commissionLakhs} Lakhs average commission per booking.
-                  </p>
+                  <span className="text-[10px] text-zinc-500">+{monthlyDeals} bookings / mo</span>
+                </div>
+              </div>
+
+              {/* Response Speed Comparison Mini-Card */}
+              <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.06] text-xs space-y-2 font-mono">
+                <div className="flex items-center justify-between text-zinc-400">
+                  <span>Traditional Broker Delay:</span>
+                  <span className="text-rose-400 font-bold">45 - 120 Mins (Cold)</span>
+                </div>
+                <div className="flex items-center justify-between text-zinc-200">
+                  <span className="flex items-center gap-1.5 text-emerald-400">
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>Samruddhi AI Telephony:</span>
+                  </span>
+                  <span className="text-emerald-400 font-bold">&lt; 15 Seconds (Instant)</span>
                 </div>
               </div>
             </div>
 
-            <div className="pt-4 border-t border-teal-900 space-y-3">
+            {/* CTA Trigger */}
+            <div className="pt-2 space-y-2.5">
               <button
                 onClick={() => onOpenDemoWithLeads(monthlyLeads)}
-                className="w-full py-4 bg-amber-400 hover:bg-amber-300 text-gray-950 font-extrabold text-base rounded-xl shadow-lg shadow-amber-400/20 transition-all transform hover:-translate-y-0.5 flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] hover:from-[#e5c358] hover:to-[#ffeeb3] text-black font-extrabold text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-xl shadow-[#D4AF37]/15 transition-all transform active:scale-98 cursor-pointer"
               >
                 <span>Recover My Lost Revenue Now</span>
-                <ArrowRight className="w-5 h-5 text-gray-950" />
+                <ArrowRight className="w-4 h-4 text-black" />
               </button>
-
-              <p className="text-[11px] text-center text-teal-300/70">
-                Guaranteed lead response SLA included in all developer contracts.
+              <p className="text-[10.5px] text-center text-zinc-500 font-mono">
+                Zero onboarding friction • Connects directly to Meta, Google &amp; CRM webhooks
               </p>
             </div>
 
           </div>
 
         </div>
-        )}
 
       </div>
     </section>

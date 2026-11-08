@@ -219,9 +219,21 @@ class VoiceEngineService {
     };
 
     audio.onerror = (e) => {
-      console.warn('[VoiceEngine] Audio playback error, applying consistent speech synth fallback', e);
+      console.warn('[VoiceEngine] Audio playback error, checking server TTS fallback', e);
       if (text && lang && sender) {
-        this.fallbackSpeechSynthesis(text, lang, sender, emotion as any, onStart, onEnd, onError);
+        const ttsUrl = `/api/tts?lang=${encodeURIComponent(lang)}&sender=${encodeURIComponent(sender)}&text=${encodeURIComponent(text.trim())}`;
+        fetch(ttsUrl)
+          .then((res) => {
+            if (!res.ok) throw new Error('Server TTS response not ok');
+            return res.blob();
+          })
+          .then((blob) => {
+            const objectUrl = URL.createObjectURL(blob);
+            this.playFromUrl(objectUrl, onStart, onEnd, onError);
+          })
+          .catch(() => {
+            this.fallbackSpeechSynthesis(text, lang, sender, emotion as any, onStart, onEnd, onError);
+          });
       } else {
         this.isCurrentlyPlaying = false;
         onError?.(e);
@@ -232,9 +244,21 @@ class VoiceEngineService {
     if (playPromise !== undefined) {
       playPromise.catch((playErr) => {
         if (playErr?.name !== 'AbortError') {
-          console.warn('[VoiceEngine] Audio play promise rejected, falling back:', playErr?.message);
+          console.warn('[VoiceEngine] Audio play promise rejected, checking fallback:', playErr?.message);
           if (text && lang && sender) {
-            this.fallbackSpeechSynthesis(text, lang, sender, emotion as any, onStart, onEnd, onError);
+            const ttsUrl = `/api/tts?lang=${encodeURIComponent(lang)}&sender=${encodeURIComponent(sender)}&text=${encodeURIComponent(text.trim())}`;
+            fetch(ttsUrl)
+              .then((res) => {
+                if (!res.ok) throw new Error('Server TTS response not ok');
+                return res.blob();
+              })
+              .then((blob) => {
+                const objectUrl = URL.createObjectURL(blob);
+                this.playFromUrl(objectUrl, onStart, onEnd, onError);
+              })
+              .catch(() => {
+                this.fallbackSpeechSynthesis(text, lang, sender, emotion as any, onStart, onEnd, onError);
+              });
           } else {
             onError?.(playErr);
           }
@@ -276,7 +300,8 @@ class VoiceEngineService {
           mr: 'mr-IN'
         };
 
-        utterance.lang = langMap[lang] || 'en-IN';
+        const targetLocale = langMap[lang] || 'en-IN';
+        utterance.lang = targetLocale;
         
         // Strict Dual Voice Persona Configuration:
         // Bot (Assistant): Female vocal range, pleasant, confident
@@ -298,19 +323,37 @@ class VoiceEngineService {
         utterance.rate = Math.max(0.8, Math.min(1.4, baseRate));
         utterance.pitch = Math.max(0.6, Math.min(1.6, basePitch));
 
+        const voices = window.speechSynthesis.getVoices();
+        const targetPrefix = lang.toLowerCase();
+
+        // Exact dialect voice filtering - only match voices truly belonging to target language
+        const matchingVoices = voices.filter(v => {
+          const vLang = v.lang.toLowerCase().replace('_', '-');
+          return vLang.startsWith(targetPrefix);
+        });
+
+        // If target language is non-English and browser has NO native voice for that language,
+        // NEVER allow an English voice to read Kannada or Indian script.
+        if (targetPrefix !== 'en' && matchingVoices.length === 0) {
+          const ttsUrl = `/api/tts?lang=${encodeURIComponent(lang)}&sender=${encodeURIComponent(sender)}&text=${encodeURIComponent(text.trim())}`;
+          fetch(ttsUrl)
+            .then(res => {
+              if (!res.ok) throw new Error('Server TTS not ok');
+              return res.blob();
+            })
+            .then(blob => {
+              const objectUrl = URL.createObjectURL(blob);
+              this.playFromUrl(objectUrl, onStart, onEnd, onError, text, lang, sender, emotion);
+            })
+            .catch(() => {
+              this.fallbackAudioTone(text, sender, onStart, onEnd);
+            });
+          return;
+        }
+
         // Pin voice per (lang, sender) to prevent voice changes mid-conversation
         const voiceKey = `${lang}_${sender}`;
         if (!this.chosenVoices.has(voiceKey)) {
-          const voices = window.speechSynthesis.getVoices();
-          const targetLang = utterance.lang.toLowerCase();
-          const targetPrefix = lang.toLowerCase();
-
-          const matchingVoices = voices.filter(v => 
-            v.lang.toLowerCase().includes(targetLang) || 
-            v.lang.toLowerCase().startsWith(targetPrefix) ||
-            v.lang.toLowerCase().includes('in')
-          );
-
           let selectedVoice: SpeechSynthesisVoice | null = null;
 
           if (isBot) {
@@ -323,7 +366,7 @@ class VoiceEngineService {
               v.name.toLowerCase().includes('kavya') || 
               v.name.toLowerCase().includes('aditi') ||
               v.name.toLowerCase().includes('priya')
-            ) || matchingVoices[0] || voices[0] || null;
+            ) || matchingVoices[0] || null;
           } else {
             // Find male voice for Customer
             selectedVoice = matchingVoices.find(v => 
@@ -332,7 +375,7 @@ class VoiceEngineService {
               v.name.toLowerCase().includes('ravi') || 
               v.name.toLowerCase().includes('prabhat') || 
               v.name.toLowerCase().includes('george')
-            ) || matchingVoices[matchingVoices.length > 1 ? 1 : 0] || voices[voices.length > 1 ? 1 : 0] || null;
+            ) || matchingVoices[matchingVoices.length > 1 ? 1 : 0] || null;
           }
 
           this.chosenVoices.set(voiceKey, selectedVoice);

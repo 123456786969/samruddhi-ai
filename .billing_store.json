@@ -1,5 +1,17 @@
 {
-  "subscriptions": {},
+  "subscriptions": {
+    "usr_demo_partner_blr": {
+      "plan_id": "pro",
+      "billing_cycle": "annual",
+      "status": "active",
+      "current_period_start": 1793611312533,
+      "current_period_end": 1825147312533,
+      "founding_partner": true,
+      "founding_partner_until": 1825147312533,
+      "voice_topup_minutes": 300,
+      "updated_at": 1793611312533
+    }
+  },
   "usage": {},
   "processed_payments": {},
   "leads": {},

@@ -102,7 +102,7 @@ export const MagneticFooter: React.FC<MagneticFooterProps> = ({ onOpenDemo, onOp
           <div className="space-y-3">
             <div className="font-mono uppercase tracking-widest text-[#F4F4F5] font-semibold">Engine</div>
             <ul className="space-y-2 text-[#A1A1AA]">
-              <li><a href="#voice-simulator" className="hover:text-[#D4AF37] transition-colors">Neural Vocoder</a></li>
+              <li><a href="#voice-simulator" className="hover:text-[#D4AF37] transition-colors">Voice Agent Demo</a></li>
               <li><a href="#features" className="hover:text-[#D4AF37] transition-colors">WhatsApp Funnel</a></li>
               <li><a href="#engine-room" className="hover:text-[#D4AF37] transition-colors">CRM Synchronization</a></li>
               <li><a href="#roi" className="hover:text-[#D4AF37] transition-colors">Unit Economics Calculator</a></li>

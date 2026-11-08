@@ -158,13 +158,61 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
     });
   };
 
-  const handleTogglePlay = () => {
-    if (isPlaying) {
+  const [isPlayingTranscript, setIsPlayingTranscript] = useState<boolean>(false);
+
+  // Read the full verified transcript in the specific selected language
+  const handlePlayTranscript = () => {
+    if (isPlayingTranscript || isPlaying) {
       voiceEngine.stop();
       setIsPlaying(false);
+      setIsPlayingTranscript(false);
       setEngineState('READY');
       setActiveSpeaker(null);
     } else {
+      voiceEngine.stop();
+      setIsPlaying(true);
+      setIsPlayingTranscript(true);
+      setEngineState('TRANSMITTING');
+      setActiveSpeaker('bot');
+      setCurrentStepIndex(0);
+
+      voiceEngine.playVoice({
+        lang: selectedLangCode,
+        sender: 'bot',
+        text: activeSample.transcript,
+        audioSrc: activeSample.audioSrc,
+        emotion: 'warm',
+        onStart: () => {
+          setIsPlaying(true);
+          setIsPlayingTranscript(true);
+          setEngineState('TRANSMITTING');
+          setActiveSpeaker('bot');
+        },
+        onEnd: () => {
+          setIsPlaying(false);
+          setIsPlayingTranscript(false);
+          setEngineState('READY');
+          setActiveSpeaker(null);
+        },
+        onError: () => {
+          setIsPlaying(false);
+          setIsPlayingTranscript(false);
+          setEngineState('READY');
+          setActiveSpeaker(null);
+        }
+      });
+    }
+  };
+
+  const handleTogglePlay = () => {
+    if (isPlaying || isPlayingTranscript) {
+      voiceEngine.stop();
+      setIsPlaying(false);
+      setIsPlayingTranscript(false);
+      setEngineState('READY');
+      setActiveSpeaker(null);
+    } else {
+      setIsPlayingTranscript(false);
       playStep(0);
     }
   };
@@ -172,6 +220,7 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
   const handleReset = () => {
     voiceEngine.stop();
     setIsPlaying(false);
+    setIsPlayingTranscript(false);
     setEngineState('READY');
     setCurrentStepIndex(0);
     setActiveSpeaker(null);
@@ -180,9 +229,16 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
   const handleLanguageSelect = (code: string) => {
     voiceEngine.stop();
     setIsPlaying(false);
+    setIsPlayingTranscript(false);
     setEngineState('READY');
     setCurrentStepIndex(0);
     setActiveSpeaker(null);
+
+    // Warm up preload for newly selected language transcript
+    const sample = languageSamples.find(s => s.code === code);
+    if (sample) {
+      voiceEngine.preload(sample.transcript, code, 'bot', sample.audioSrc);
+    }
 
     if (externalLangChange) {
       externalLangChange(code);
@@ -359,6 +415,11 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
               src={activeSample.personaAvatar} 
               alt={activeSample.persona}
               referrerPolicy="no-referrer"
+              crossOrigin="anonymous"
+              onError={(e) => {
+                e.currentTarget.onerror = null;
+                e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(activeSample.persona)}&background=18181b&color=D4AF37&bold=true`;
+              }}
               className="w-7 h-7 rounded-full object-cover border border-[#D4AF37]/50 shadow-sm"
             />
             <div>
@@ -423,26 +484,47 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
               })}
             </div>
 
-            {/* Active Dialogue Snippet Overlay */}
-            <div className="mt-4 text-center max-w-xl z-10">
+            {/* Active Dialogue / Transcript Snippet Overlay */}
+            <div className="mt-4 text-center max-w-xl z-10 w-full px-2">
               <AnimatePresence mode="wait">
                 <motion.div
-                  key={currentStepIndex + selectedLangCode}
+                  key={(isPlayingTranscript ? 'transcript_' : currentStepIndex) + selectedLangCode}
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.3 }}
-                  className="space-y-1"
+                  className="space-y-2"
                 >
-                  <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#D4AF37]">
-                    {activeSpeaker === 'bot' 
-                      ? `✦ AI Telephony Agent (${activeSample.persona.split('—')[0].trim()})` 
-                      : activeSpeaker === 'user' 
-                      ? '👤 Prospect (Vikram • Home Buyer)' 
-                      : 'Zero-Lag Voice Ready'}
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#D4AF37]">
+                      {isPlayingTranscript
+                        ? `✦ Reading ${activeSample.label} Transcript (${activeSample.persona.split('—')[0].trim()})`
+                        : activeSpeaker === 'bot' 
+                        ? `✦ AI Telephony Agent (${activeSample.persona.split('—')[0].trim()})` 
+                        : activeSpeaker === 'user' 
+                        ? '👤 Prospect (Vikram • Home Buyer)' 
+                        : `✦ Verified Transcript in ${activeSample.label}`}
+                    </span>
+                    <button
+                      onClick={handlePlayTranscript}
+                      className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#D4AF37]/20 hover:bg-[#D4AF37]/30 text-[#D4AF37] border border-[#D4AF37]/40 flex items-center gap-1 transition-all cursor-pointer"
+                      title={`Listen to transcript in ${activeSample.label}`}
+                    >
+                      {isPlayingTranscript ? (
+                        <>
+                          <Pause className="w-2.5 h-2.5" />
+                          <span>Stop</span>
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-2.5 h-2.5" />
+                          <span>Read in {activeSample.label}</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                  <p className="text-sm md:text-base text-[#F4F4F5] font-serif italic line-clamp-2 px-4">
-                    "{isPlaying ? conversation[currentStepIndex]?.text : activeSample.transcript}"
+                  <p className="text-sm md:text-base text-[#F4F4F5] font-serif italic line-clamp-3 px-4 leading-relaxed">
+                    "{isPlayingTranscript ? activeSample.transcript : isPlaying ? conversation[currentStepIndex]?.text : activeSample.transcript}"
                   </p>
                 </motion.div>
               </AnimatePresence>
@@ -452,8 +534,8 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
           {/* Conversation Dialogue Timeline */}
           <div className="space-y-2.5 max-h-[210px] overflow-y-auto pr-2 scrollbar-none">
             {conversation.map((msg, idx) => {
-              const isCurrent = idx === currentStepIndex && isPlaying;
-              const isPast = idx < currentStepIndex && isPlaying;
+              const isCurrent = idx === currentStepIndex && isPlaying && !isPlayingTranscript;
+              const isPast = idx < currentStepIndex && isPlaying && !isPlayingTranscript;
 
               return (
                 <motion.div
@@ -461,12 +543,13 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
                   initial={{ opacity: 0, x: msg.sender === 'bot' ? -10 : 10 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.05 }}
-                  className={`p-3 rounded-xl text-xs md:text-sm flex items-start gap-3 transition-all ${
+                  onClick={() => playStep(idx)}
+                  className={`p-3 rounded-xl text-xs md:text-sm flex items-start gap-3 transition-all cursor-pointer ${
                     isCurrent
                       ? 'bg-[#181610] border border-[#D4AF37]/50 shadow-sm shadow-[#D4AF37]/15 ring-1 ring-[#D4AF37]/30'
                       : isPast
                       ? 'bg-white/[0.02] border border-white/[0.04] opacity-60'
-                      : 'bg-white/[0.01] border border-transparent opacity-80'
+                      : 'bg-white/[0.01] hover:bg-white/[0.03] border border-transparent opacity-80'
                   }`}
                 >
                   <div className={`p-1.5 rounded-lg shrink-0 mt-0.5 ${
@@ -504,17 +587,40 @@ export const VoiceHardwareSimulator: React.FC<VoiceHardwareSimulatorProps> = ({
 
           {/* Controls Console */}
           <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-white/[0.06]">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <motion.button
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
+                onClick={handlePlayTranscript}
+                className={`px-5 py-3 rounded-xl font-bold text-xs uppercase tracking-widest flex items-center gap-2 border transition-all cursor-pointer ${
+                  isPlayingTranscript
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-400 shadow-lg shadow-amber-500/20'
+                    : 'bg-[#18181b] hover:bg-[#27272a] text-[#D4AF37] border-[#D4AF37]/40 hover:border-[#D4AF37]'
+                }`}
+              >
+                {isPlayingTranscript ? (
+                  <>
+                    <Pause className="w-4 h-4 text-amber-300" />
+                    <span>Stop Transcript</span>
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Read {activeSample.label} Transcript</span>
+                  </>
+                )}
+              </motion.button>
+
               <motion.button
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.96 }}
                 onClick={handleTogglePlay}
-                className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#E5C358] text-[#0A0A0A] font-bold text-xs uppercase tracking-widest flex items-center gap-2.5 shadow-lg shadow-[#D4AF37]/20 transition-transform cursor-pointer"
+                className="px-5 py-3 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#E5C358] text-[#0A0A0A] font-bold text-xs uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-[#D4AF37]/20 transition-transform cursor-pointer"
               >
-                {isPlaying ? (
+                {isPlaying && !isPlayingTranscript ? (
                   <>
                     <Pause className="w-4 h-4" />
-                    <span>Halt Simulation</span>
+                    <span>Halt Call</span>
                   </>
                 ) : (
                   <>

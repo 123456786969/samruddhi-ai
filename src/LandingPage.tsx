@@ -10,7 +10,6 @@ import { FeatureSliderCarousel } from './components/luxury/FeatureSliderCarousel
 import { EngineRoomSpecs } from './components/luxury/EngineRoomSpecs';
 import { RoiCalculator } from './components/RoiCalculator';
 import { ComparisonTable } from './components/ComparisonTable';
-import { SocialProof } from './components/SocialProof';
 import { MagneticFooter } from './components/luxury/MagneticFooter';
 import { BookDemoModal } from './components/BookDemoModal';
 import { VideoModal } from './components/VideoModal';
@@ -140,10 +139,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ citySlug }) => {
           <RoiCalculator onOpenDemoWithLeads={handleOpenDemoWithLeads} />
         </div>
 
-        {/* Architectural Comparison & Social Proof */}
-        <div className="space-y-16">
+        {/* Architectural Comparison */}
+        <div>
           <ComparisonTable onOpenDemo={handleOpenDemoStandard} />
-          <SocialProof />
         </div>
       </main>
 

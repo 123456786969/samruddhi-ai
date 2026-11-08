@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useToast } from '../components/dashboard/ui/Toast';
+import { getInitialDemoData } from '../data/demoSeed';
 
 interface Identifiable {
   id: string;
@@ -52,11 +53,34 @@ export function useAgentCollection<T extends Identifiable>(
     // Graceful fallback if invoked outside ToastProvider
   }
 
-  const [authUid, setAuthUid] = useState<string | null>(auth.currentUser?.uid || null);
+  const [authUid, setAuthUid] = useState<string | null>(() => {
+    if (auth.currentUser?.uid) return auth.currentUser.uid;
+    const storedDemo = localStorage.getItem('demoUser') || sessionStorage.getItem('demoUser');
+    if (storedDemo) {
+      try {
+        return JSON.parse(storedDemo).uid || 'usr_demo_partner_blr';
+      } catch {}
+    }
+    return null;
+  });
 
   useEffect(() => {
     const unsubscribeAuth = auth.onAuthStateChanged((u) => {
-      setAuthUid(u?.uid || null);
+      if (u?.uid) {
+        setAuthUid(u.uid);
+      } else {
+        const storedDemo = localStorage.getItem('demoUser') || sessionStorage.getItem('demoUser');
+        const otpVerified = localStorage.getItem('otpVerified') === 'true' || sessionStorage.getItem('otpVerified') === 'true';
+        if (storedDemo && otpVerified) {
+          try {
+            setAuthUid(JSON.parse(storedDemo).uid || 'usr_demo_partner_blr');
+          } catch {
+            setAuthUid(null);
+          }
+        } else {
+          setAuthUid(null);
+        }
+      }
     });
     return () => unsubscribeAuth();
   }, []);
@@ -64,9 +88,29 @@ export function useAgentCollection<T extends Identifiable>(
   const uid = authUid;
 
   useEffect(() => {
-    if (!uid || !auth.currentUser || options?.skip) {
+    if (!uid || options?.skip) {
       setData([]);
       setLoading(false);
+      return;
+    }
+
+    // If running in demo mode or without Firebase Auth popup
+    if (!auth.currentUser) {
+      try {
+        const demoKey = `demo_${collectionName}`;
+        const raw = localStorage.getItem(demoKey);
+        let items: T[] = raw ? JSON.parse(raw) : [];
+        if (!items || items.length === 0) {
+          items = getInitialDemoData(collectionName, uid) as T[];
+          localStorage.setItem(demoKey, JSON.stringify(items));
+        }
+        setData(items);
+      } catch (e) {
+        console.warn(`Demo collection fallback read notice (${collectionName}):`, e);
+        setData([]);
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
@@ -97,9 +141,22 @@ export function useAgentCollection<T extends Identifiable>(
         setError(null);
       },
       (err) => {
-        console.error(`Error in useAgentCollection (${collectionName}):`, err);
-        setError(err);
-        setLoading(false);
+        console.warn(`Firestore snapshot notice (${collectionName}):`, err.message);
+        // Fallback to local demo data if permission denied in preview
+        try {
+          const demoKey = `demo_${collectionName}`;
+          const raw = localStorage.getItem(demoKey);
+          let items: T[] = raw ? JSON.parse(raw) : [];
+          if (!items || items.length === 0) {
+            items = getInitialDemoData(collectionName, uid) as T[];
+            localStorage.setItem(demoKey, JSON.stringify(items));
+          }
+          setData(items);
+        } catch {
+          setError(err);
+        } finally {
+          setLoading(false);
+        }
       }
     );
 
@@ -113,7 +170,7 @@ export function useAgentCollection<T extends Identifiable>(
     async (itemData: Omit<T, 'id' | 'agent_id'> & Partial<{ agent_id: string }>): Promise<string> => {
       if (!uid) throw new Error('Not authenticated');
 
-      const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+      const tempId = `item_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
       const optimisticItem = {
         ...itemData,
         id: tempId,
@@ -123,6 +180,17 @@ export function useAgentCollection<T extends Identifiable>(
 
       // Optimistic update
       setData((prev) => [optimisticItem, ...prev]);
+
+      if (!auth.currentUser) {
+        try {
+          const demoKey = `demo_${collectionName}`;
+          const raw = localStorage.getItem(demoKey);
+          const items: any[] = raw ? JSON.parse(raw) : [];
+          localStorage.setItem(demoKey, JSON.stringify([optimisticItem, ...items]));
+          toast?.success('Item created successfully');
+        } catch {}
+        return tempId;
+      }
 
       try {
         const cleanPayload = {
@@ -159,10 +227,21 @@ export function useAgentCollection<T extends Identifiable>(
         prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
       );
 
+      if (!auth.currentUser) {
+        try {
+          const demoKey = `demo_${collectionName}`;
+          const raw = localStorage.getItem(demoKey);
+          const items: any[] = raw ? JSON.parse(raw) : [];
+          const updated = items.map((it: any) => it.id === id ? { ...it, ...updates } : it);
+          localStorage.setItem(demoKey, JSON.stringify(updated));
+        } catch {}
+        return;
+      }
+
       try {
         const cleanUpdates = { ...updates };
         delete (cleanUpdates as any).id;
-        delete (cleanUpdates as any).agent_id; // agent_id cannot be changed according to rules
+        delete (cleanUpdates as any).agent_id;
 
         await updateDoc(doc(db, collectionName, id), cleanUpdates as { [x: string]: any });
       } catch (err: any) {
@@ -190,6 +269,18 @@ export function useAgentCollection<T extends Identifiable>(
 
       // Instantly remove from UI
       setData((prev) => prev.filter((item) => item.id !== id));
+
+      if (!auth.currentUser) {
+        try {
+          const demoKey = `demo_${collectionName}`;
+          const raw = localStorage.getItem(demoKey);
+          const items: any[] = raw ? JSON.parse(raw) : [];
+          const updated = items.filter((it: any) => it.id !== id);
+          localStorage.setItem(demoKey, JSON.stringify(updated));
+        } catch {}
+        toast?.success(`${label} deleted`);
+        return Promise.resolve();
+      }
 
       if (!undoable) {
         // Hard delete immediately

@@ -31,10 +31,17 @@ import {
   Wifi,
   WifiOff,
   Zap,
-  Cpu
+  Cpu,
+  Upload,
+  RefreshCw
 } from 'lucide-react';
 import { languageSamples, LanguageSample } from '../../data/languageSamples';
 import { offlineVoiceCache, CacheStorageMetrics } from '../../services/offlineVoiceCache';
+import { 
+  FALLBACK_FLOORPLAN_SVG, 
+  FALLBACK_PROPERTY_SVGS, 
+  handleImageFallback 
+} from '../../utils/fallbackImages';
 
 interface OmnichannelStudioDemoProps {
   onOpenDemo?: () => void;
@@ -301,40 +308,71 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
   // --- SECTION 2: AI AD GENERATOR STATE ---
   const [activeSlide, setActiveSlide] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStep, setGenerationStep] = useState<string>('');
   const [copiedCaption, setCopiedCaption] = useState(false);
   const [selectedFormat, setSelectedFormat] = useState<'instagram' | 'meta' | 'whatsapp'>('instagram');
   const [selectedProject, setSelectedProject] = useState('Godrej Woodsman Estate (3BHK & 4BHK)');
+  const [uploadedAssetImage, setUploadedAssetImage] = useState<string | null>(null);
+  const [selectedArchetype, setSelectedArchetype] = useState<number>(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const archetypePresets = [
+    { 
+      title: 'Nikoo & Woodsman Skydeck', 
+      project: 'Godrej Woodsman & Nikoo Homes (Hebbal & North BLR)',
+      image: 'https://upload.wikimedia.org/wikipedia/commons/f/fa/Bharatiya_City_Nikoo_Homes_2D_Bangalore.jpg',
+      badge: 'Hebbal Skydeck'
+    },
+    { 
+      title: 'Resort Living & Infinity Pool', 
+      project: 'Sobha Windsor Biophilic Enclave (Whitefield)',
+      image: 'https://upload.wikimedia.org/wikipedia/commons/1/14/Infinitypool.jpg',
+      badge: 'Infinity Pool Deck'
+    },
+    { 
+      title: 'Namma Metro Transit Corridor', 
+      project: 'Prestige Highline Metro Enclave (ORR Purple Line)',
+      image: 'https://upload.wikimedia.org/wikipedia/commons/7/7a/Metro_Trains_of_Namma_Metro.jpg',
+      badge: '400m Metro Station'
+    },
+    { 
+      title: 'Prestige Shantiniketan Towers', 
+      project: 'Prestige Shantiniketan Signature Residences (Whitefield)',
+      image: 'https://upload.wikimedia.org/wikipedia/commons/f/f1/Prestige_Shantiniketan_In_Whitefield_Main_Road.jpg',
+      badge: 'Whitefield Main Rd'
+    }
+  ];
 
   const propertySlides = [
     {
-      title: "Ultra-Luxury 3BHK Sky Residences",
-      tag: "Prime Location",
-      desc: "Starting ₹1.45 Cr onwards • 2,150 sq.ft private terrace deck",
-      image: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1000",
+      title: "Bharatiya City Nikoo Homes & Godrej Woodsman",
+      tag: "Hebbal / North BLR",
+      desc: "Starting ₹1.45 Cr onwards • 2,150 sq.ft private terrace deck overlooking Thanisandra & Hebbal Lake",
+      image: uploadedAssetImage || "https://upload.wikimedia.org/wikipedia/commons/f/fa/Bharatiya_City_Nikoo_Homes_2D_Bangalore.jpg",
       accent: "#D4AF37",
       metrics: "ROI: +18.4% YoY • Ready by Q4 2026"
     },
     {
-      title: "World-Class 40+ Lifestyle Amenities",
+      title: "World-Class 40+ Lifestyle Amenities & Infinity Pool",
       tag: "Resort Living",
-      desc: "Heated Olympic-length Infinity Pool, 25,000 sq.ft Sky Clubhouse & Tennis Courts",
-      image: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&q=80&w=1000",
+      desc: "Olympic-length 50m Infinity Pool, 25,000 sq.ft Sky Clubhouse & Hydrotherapy Spa",
+      image: "https://upload.wikimedia.org/wikipedia/commons/1/14/Infinitypool.jpg",
       accent: "#38BDF8",
       metrics: "5-Tier Security • Biophilic Architecture"
     },
     {
-      title: "Zero-Minute Express Connectivity",
-      tag: "5 Mins to Metro",
-      desc: "Direct access to Outer Ring Road, Manyata Tech Park & Kempegowda Intl. Airport",
-      image: "https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&q=80&w=1000",
+      title: "Zero-Minute Express Namma Metro Transit",
+      tag: "400m to Metro",
+      desc: "Direct elevated connection to Purple Line, Manyata Tech Park & Kempegowda Intl. Airport",
+      image: "https://upload.wikimedia.org/wikipedia/commons/7/7a/Metro_Trains_of_Namma_Metro.jpg",
       accent: "#10B981",
       metrics: "CBD: 18 Mins • Metro Station: 400m"
     },
     {
-      title: "Exclusive Pre-Launch Platinum Offer",
-      tag: "Limited 12 Units",
+      title: "Prestige Shantiniketan Signature 3 & 4BHK",
+      tag: "Whitefield Main Rd",
       desc: "Zero Stamp Duty + 10:90 Payment Plan with ₹5 Lakhs Modular Kitchen Voucher",
-      image: "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&q=80&w=1000",
+      image: "https://upload.wikimedia.org/wikipedia/commons/f/f1/Prestige_Shantiniketan_In_Whitefield_Main_Road.jpg",
       accent: "#F59E0B",
       metrics: "Valid until Sunday • RERA Approved"
     }
@@ -354,12 +392,47 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
     setTimeout(() => setCopiedCaption(false), 2400);
   };
 
-  const handleRegenerate = () => {
+  const handleRegenerate = (targetSlideIndex?: number) => {
     setIsGenerating(true);
+    setGenerationStep('Analyzing architectural CAD lines & elevations...');
+    setTimeout(() => {
+      setGenerationStep('Synthesizing localized multilingual ad hooks...');
+    }, 300);
+    setTimeout(() => {
+      setGenerationStep('Rendering high-CTR social carousel slides...');
+    }, 600);
     setTimeout(() => {
       setIsGenerating(false);
-      setActiveSlide((prev) => (prev + 1) % propertySlides.length);
-    }, 850);
+      setGenerationStep('');
+      if (typeof targetSlideIndex === 'number') {
+        setActiveSlide(targetSlideIndex);
+      } else {
+        setActiveSlide((prev) => (prev + 1) % propertySlides.length);
+      }
+    }, 950);
+  };
+
+  const handleAssetFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setUploadedAssetImage(event.target.result as string);
+          setActiveSlide(0);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleDownloadSlide = () => {
+    const link = document.createElement('a');
+    link.href = propertySlides[activeSlide].image;
+    link.download = `samruddhi_${selectedFormat}_slide_0${activeSlide + 1}.svg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleDownloadBrochure = () => {
@@ -834,8 +907,14 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
                   <div className="space-y-3 p-1">
                     <div className="relative rounded-xl overflow-hidden border border-white/[0.1] bg-[#14141A]">
                       <img 
-                        src="https://images.unsplash.com/photo-1600585154526-990dced4db0d?auto=format&fit=crop&q=80&w=800" 
+                        src="https://upload.wikimedia.org/wikipedia/commons/7/70/3d-design-floor-plan-coloured.jpg" 
                         alt="3BHK Master Floor Plan"
+                        referrerPolicy="no-referrer"
+                        crossOrigin="anonymous"
+                        onError={(e) => {
+                          e.currentTarget.onerror = null;
+                          e.currentTarget.src = FALLBACK_FLOORPLAN_SVG;
+                        }}
                         className="w-full h-44 object-cover"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent flex flex-col justify-end p-3">
@@ -937,33 +1016,93 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
           {/* Left Column: Input Controller & Controls */}
           <div className="lg:col-span-5 space-y-5 bg-[#121218] border border-white/[0.08] p-6 rounded-2xl shadow-xl">
             
+            {/* Hidden Real File Input */}
+            <input 
+              ref={fileInputRef}
+              type="file" 
+              accept="image/*"
+              onChange={handleAssetFileUpload}
+              className="hidden" 
+            />
+
             {/* Uploaded Property Asset Mockup */}
             <div className="space-y-2">
-              <label className="text-xs font-mono uppercase text-zinc-400 flex items-center justify-between">
+              <div className="text-xs font-mono uppercase text-zinc-400 flex items-center justify-between">
                 <span>Input Architectural Asset</span>
-                <span className="text-emerald-400 text-[10px] font-semibold">● Vision Model Analyzed</span>
-              </label>
+                <span className="text-emerald-400 text-[10px] font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Vision Model Analyzed</span>
+                </span>
+              </div>
               
               <div 
-                onClick={handleRegenerate}
-                className="relative rounded-xl border-2 border-dashed border-zinc-700 hover:border-indigo-400/80 p-4 transition-all duration-300 bg-white/[0.02] cursor-pointer group flex items-center gap-3.5"
+                onClick={() => fileInputRef.current?.click()}
+                className="relative rounded-xl border-2 border-dashed border-zinc-700 hover:border-indigo-400/80 p-3.5 transition-all duration-300 bg-white/[0.02] cursor-pointer group flex items-center gap-3.5"
+                title="Click to upload your own floorplan or architectural render"
               >
-                <div className="w-16 h-16 rounded-lg overflow-hidden shrink-0 border border-white/[0.1] relative">
+                <div className="w-16 h-16 rounded-lg overflow-hidden shrink-0 border border-white/[0.1] relative bg-[#18181f]">
                   <img 
                     src={propertySlides[activeSlide].image} 
                     alt="Analyzed Property" 
+                    referrerPolicy="no-referrer"
+                    crossOrigin="anonymous"
+                    onError={(e) => handleImageFallback(e, activeSlide)}
                     className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
                   />
-                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
-                    <ImageIcon className="w-5 h-5 text-white/90" />
+                  <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                    <Upload className="w-5 h-5 text-white/90 group-hover:scale-110 transition-transform" />
                   </div>
                 </div>
 
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-white truncate">luxury_residence_facade.raw</p>
-                  <p className="text-[11px] text-zinc-400 mt-0.5">High-Res 4K Render • 3840 x 2160</p>
-                  <p className="text-[10px] text-indigo-400 mt-1 font-mono">Detected: 3BHK, Sky Deck, Contemporary</p>
+                  <p className="text-xs font-semibold text-white truncate flex items-center gap-1.5">
+                    <span>{uploadedAssetImage ? 'custom_property_photo.jpg' : 'bangalore_luxury_residence.jpg'}</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                      {uploadedAssetImage ? 'CUSTOM' : 'REAL PHOTO'}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-zinc-400 mt-0.5">Authentic High-Resolution Site Photography</p>
+                  <p className="text-[10px] text-indigo-400 mt-1 font-mono font-medium">Click to upload custom photo or CAD</p>
                 </div>
+              </div>
+            </div>
+
+            {/* Architectural Archetype Presets with Real Apartment Photos */}
+            <div className="space-y-1.5">
+              <div className="text-xs font-mono uppercase text-zinc-400 flex items-center justify-between">
+                <span>Verified Property Photos</span>
+                <span className="text-[10px] text-[#D4AF37] font-semibold">● Real Bangalore Sites</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {archetypePresets.map((arch, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setSelectedArchetype(idx);
+                      setSelectedProject(arch.project);
+                      handleRegenerate(idx);
+                    }}
+                    className={`p-2 rounded-xl text-left text-xs font-medium transition-all cursor-pointer border flex items-center gap-2.5 ${
+                      activeSlide === idx
+                        ? 'bg-indigo-950/90 border-indigo-400 text-white shadow-lg shadow-indigo-950/50'
+                        : 'bg-white/[0.02] border-white/[0.06] text-zinc-400 hover:text-white hover:border-white/[0.15]'
+                    }`}
+                  >
+                    <img 
+                      src={arch.image} 
+                      alt={arch.title} 
+                      referrerPolicy="no-referrer"
+                      crossOrigin="anonymous"
+                      onError={(e) => handleImageFallback(e, idx)}
+                      className="w-9 h-9 rounded-lg object-cover shrink-0 border border-white/10"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-[11px] truncate">{arch.title}</div>
+                      <div className="text-[9.5px] text-zinc-400 font-mono truncate">{arch.badge}</div>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -993,7 +1132,7 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
                   <button
                     key={fmt.id}
                     onClick={() => setSelectedFormat(fmt.id as any)}
-                    className={`py-2 px-2.5 rounded-lg text-xs font-medium transition-all ${
+                    className={`py-2 px-2.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
                       selectedFormat === fmt.id
                         ? 'bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-600/30'
                         : 'bg-white/[0.04] text-zinc-400 hover:text-white border border-white/[0.06]'
@@ -1005,24 +1144,34 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
               </div>
             </div>
 
-            {/* AI Generator CTA Trigger Button */}
-            <button
-              onClick={handleRegenerate}
-              disabled={isGenerating}
-              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 transition-all transform active:scale-98 cursor-pointer disabled:opacity-75"
-            >
-              {isGenerating ? (
-                <>
-                  <Sparkles className="w-4 h-4 animate-spin text-[#D4AF37]" />
-                  <span>Synthesizing Creatives...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4 text-[#D4AF37]" />
-                  <span>Regenerate 4-Slide Creative Suite</span>
-                </>
+            {/* AI Generator CTA Trigger Button with Live Progress */}
+            <div className="space-y-2">
+              <button
+                onClick={() => handleRegenerate()}
+                disabled={isGenerating}
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 transition-all transform active:scale-98 cursor-pointer disabled:opacity-75"
+              >
+                {isGenerating ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin text-[#D4AF37]" />
+                    <span>Synthesizing Creatives...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Regenerate 4-Slide Creative Suite</span>
+                  </>
+                )}
+              </button>
+
+              {isGenerating && generationStep && (
+                <div className="p-2.5 rounded-lg bg-indigo-950/60 border border-indigo-500/20 text-center animate-pulse">
+                  <span className="text-[11px] font-mono text-indigo-300">
+                    {generationStep}
+                  </span>
+                </div>
               )}
-            </button>
+            </div>
           </div>
 
           {/* Right Column: Generated Interactive Carousel & Copy Preview */}
@@ -1040,10 +1189,13 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
                   transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
                   className="absolute inset-0"
                 >
-                  {/* Slide Background Image with subtle ken burns effect */}
+                  {/* Slide Background Image with robust fallback */}
                   <img 
                     src={propertySlides[activeSlide].image} 
                     alt={propertySlides[activeSlide].title}
+                    referrerPolicy="no-referrer"
+                    crossOrigin="anonymous"
+                    onError={(e) => handleImageFallback(e, activeSlide)}
                     className="w-full h-full object-cover"
                   />
                   {/* Gradient Lighting Scrim */}
@@ -1110,15 +1262,26 @@ export const OmnichannelStudioDemo: React.FC<OmnichannelStudioDemoProps> = ({ on
                     <span>{localizedAdSlide?.priceNote || propertySlides[activeSlide].metrics}</span>
                   </span>
 
-                  {onOpenDemo && (
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={onOpenDemo}
-                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 backdrop-blur-md text-[11px] font-bold text-white flex items-center gap-1 transition-colors"
+                      onClick={handleDownloadSlide}
+                      className="px-3 py-1.5 rounded-lg bg-black/50 hover:bg-black/80 border border-white/20 backdrop-blur-md text-[11px] font-bold text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+                      title="Download this creative slide"
                     >
-                      <span>Preview Ad</span>
-                      <ArrowRight className="w-3 h-3" />
+                      <Download className="w-3 h-3 text-[#D4AF37]" />
+                      <span>Export Slide</span>
                     </button>
-                  )}
+
+                    {onOpenDemo && (
+                      <button
+                        onClick={onOpenDemo}
+                        className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 backdrop-blur-md text-[11px] font-bold text-white flex items-center gap-1 transition-colors cursor-pointer"
+                      >
+                        <span>Preview Ad</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 

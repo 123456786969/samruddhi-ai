@@ -31,10 +31,10 @@ export interface CacheStorageMetrics {
   languagesCached: string[];
 }
 
-const DB_NAME = 'SamruddhiOfflineAudioCache';
+const DB_NAME = 'SamruddhiOfflineAudioCache_v2';
 const DB_VERSION = 1;
 const STORE_NAME = 'voice_packs';
-const CACHE_NAME = 'samruddhi-voice-assets-v1';
+const CACHE_NAME = 'samruddhi-voice-assets-v2';
 
 class OfflineVoiceCacheService {
   private dbPromise: Promise<IDBDatabase> | null = null;

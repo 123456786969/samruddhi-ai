@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MessageSquare, PhoneCall, RefreshCw, BarChart3, CheckCircle, Play, Volume2, Sparkles, ArrowUpRight, Zap, ShieldCheck } from 'lucide-react';
 import { languageSamples } from '../data/languageSamples';
+import { voiceEngine } from '../services/voiceEngine';
 
 interface FeaturesGridProps {
   onOpenDemo: () => void;
@@ -10,42 +11,48 @@ export const FeaturesGrid: React.FC<FeaturesGridProps> = ({ onOpenDemo }) => {
   const [selectedVoice, setSelectedVoice] = useState('en');
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioError, setAudioError] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const activeSample = languageSamples.find(v => v.code === selectedVoice) || languageSamples[0];
 
   const handleVoiceChange = (code: string) => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
+    voiceEngine.stop();
     setIsPlayingAudio(false);
     setAudioError(false);
     setSelectedVoice(code);
+
+    const sample = languageSamples.find(v => v.code === code);
+    if (sample) {
+      voiceEngine.preload(sample.transcript, code, 'bot', sample.audioSrc);
+    }
   };
 
   const toggleAudio = () => {
     if (isPlayingAudio) {
-      if (audioRef.current) audioRef.current.pause();
+      voiceEngine.stop();
       setIsPlayingAudio(false);
     } else {
       setAudioError(false);
-      const audio = new Audio(activeSample.audioSrc);
-      audioRef.current = audio;
-      audio.onended = () => setIsPlayingAudio(false);
-      audio.onerror = () => {
-        setIsPlayingAudio(false);
-        setAudioError(true);
-      };
       setIsPlayingAudio(true);
-      audio.play().catch((err) => {
-        if (err?.name === 'AbortError' || err?.message?.includes('interrupted by a call to pause')) {
-          return;
+      voiceEngine.playVoice({
+        lang: activeSample.code,
+        sender: 'bot',
+        text: activeSample.transcript,
+        audioSrc: activeSample.audioSrc,
+        onStart: () => setIsPlayingAudio(true),
+        onEnd: () => setIsPlayingAudio(false),
+        onError: () => {
+          setIsPlayingAudio(false);
+          setAudioError(true);
         }
-        setIsPlayingAudio(false);
-        setAudioError(true);
       });
     }
   };
+
+  useEffect(() => {
+    return () => {
+      voiceEngine.stop();
+    };
+  }, []);
 
   return (
     <section id="features" className="scroll-mt-28 py-20 bg-transparent relative">
@@ -160,11 +167,21 @@ export const FeaturesGrid: React.FC<FeaturesGridProps> = ({ onOpenDemo }) => {
                   <button
                     onClick={toggleAudio}
                     disabled={audioError}
-                    className={`p-1 ${audioError ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-amber-400 text-gray-950 hover:bg-amber-300 cursor-pointer'} rounded transition-colors`}
-                    title={audioError ? "Sample coming soon" : "Play audio sample"}
+                    className={`p-1.5 ${audioError ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-amber-400 text-gray-950 hover:bg-amber-300 cursor-pointer'} rounded transition-colors flex items-center gap-1`}
+                    title={audioError ? "Sample coming soon" : `Play ${activeSample.label} audio`}
                   >
                     {audioError ? <Volume2 className="w-3.5 h-3.5" /> : isPlayingAudio ? <Volume2 className="w-3.5 h-3.5 animate-bounce" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                    <span className="text-[10px] font-bold font-mono">{isPlayingAudio ? 'Stop' : 'Listen'}</span>
                   </button>
+                </div>
+
+                <div className="p-2 bg-black/40 rounded-lg border border-teal-900/60">
+                  <span className="text-[10px] font-mono uppercase text-amber-400/90 block mb-1">
+                    Transcript ({activeSample.label}):
+                  </span>
+                  <p className="text-[11px] text-teal-100/90 font-serif italic line-clamp-3 leading-relaxed">
+                    "{activeSample.transcript}"
+                  </p>
                 </div>
               </div>
             </div>

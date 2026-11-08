@@ -57,7 +57,7 @@ export const DashboardHome: React.FC = () => {
     : 'No active renewal';
 
   useEffect(() => {
-    if (!user?.uid || !auth.currentUser) {
+    if (!user?.uid) {
       setLoading(false);
       return;
     }
@@ -65,12 +65,30 @@ export const DashboardHome: React.FC = () => {
   }, [user]);
 
   const fetchDashboardData = async () => {
-    if (!user?.uid || !auth.currentUser) {
+    if (!user?.uid) {
       setLoading(false);
       return;
     }
     try {
       setLoading(true);
+
+      if (!auth.currentUser) {
+        const readLocal = (key: string) => {
+          try {
+            const raw = localStorage.getItem(`demo_${key}`);
+            return raw ? JSON.parse(raw) : [];
+          } catch {
+            return [];
+          }
+        };
+        setLeads(readLocal('leads'));
+        setTasks(readLocal('tasks'));
+        setVisits(readLocal('visits'));
+        setDeals(readLocal('deals'));
+        setActivities(readLocal('activities'));
+        return;
+      }
+
       const uid = auth.currentUser.uid;
 
       const [leadsSnap, tasksSnap, visitsSnap, dealsSnap, actSnap] = await Promise.all([

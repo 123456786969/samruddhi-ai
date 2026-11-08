@@ -24,7 +24,7 @@ export interface VoiceCacheStats {
   coreLanguagesReady: boolean; // English, Hindi, Kannada
 }
 
-const DB_NAME = 'SamruddhiNeuralVoiceBlobs_v2';
+const DB_NAME = 'SamruddhiNeuralVoiceBlobs_v3';
 const DB_VERSION = 1;
 const STORE_NAME = 'neural_voice_blobs';
 

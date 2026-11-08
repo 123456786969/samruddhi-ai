@@ -227,7 +227,17 @@ export const PublicCatalogue: React.FC = () => {
               <div key={prop.id} className="bg-[#051611] border border-teal-900/50 rounded-2xl overflow-hidden group hover:border-teal-500/50 transition-all flex flex-col">
                 <div className="h-56 relative bg-black/40 overflow-hidden">
                   {prop.photos && prop.photos.length > 0 ? (
-                    <img src={prop.photos[0]} alt={prop.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                    <img 
+                      src={prop.photos[0]} 
+                      alt={prop.title} 
+                      referrerPolicy="no-referrer"
+                      crossOrigin="anonymous"
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"><rect width="600" height="400" fill="%23051611"/><text x="300" y="200" fill="%23D4AF37" font-family="sans-serif" font-size="20" font-weight="bold" text-anchor="middle">LUXURY PROPERTY RESIDENCE</text></svg>';
+                      }}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
+                    />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-teal-900">
                       <Building2 className="w-12 h-12 opacity-50" />

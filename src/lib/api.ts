@@ -37,13 +37,20 @@ export async function apiFetch<T = any>(url: string, options: ApiFetchOptions = 
     headers.set('Content-Type', 'application/json');
   }
 
-  // Attach Firebase ID token if user is signed in
-  if (!options.skipAuth && auth.currentUser) {
-    try {
-      const idToken = await auth.currentUser.getIdToken();
-      headers.set('Authorization', `Bearer ${idToken}`);
-    } catch (e) {
-      console.warn('[apiFetch] Could not retrieve Firebase ID token:', e);
+  // Attach Firebase ID token if user is signed in, or stored session token
+  if (!options.skipAuth) {
+    if (auth.currentUser) {
+      try {
+        const idToken = await auth.currentUser.getIdToken();
+        headers.set('Authorization', `Bearer ${idToken}`);
+      } catch (e) {
+        console.warn('[apiFetch] Could not retrieve Firebase ID token:', e);
+      }
+    } else {
+      const storedToken = localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+      if (storedToken) {
+        headers.set('Authorization', `Bearer ${storedToken}`);
+      }
     }
   }
 

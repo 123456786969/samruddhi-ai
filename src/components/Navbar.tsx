@@ -28,9 +28,17 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenDemo, onOpenLogin }) => {
       if (currentUser) {
         setUser(currentUser);
       } else {
-        localStorage.removeItem('demoUser');
-        sessionStorage.removeItem('demoUser');
-        setUser(null);
+        const storedDemo = localStorage.getItem('demoUser') || sessionStorage.getItem('demoUser');
+        const otpVerified = localStorage.getItem('otpVerified') === 'true' || sessionStorage.getItem('otpVerified') === 'true';
+        if (storedDemo && otpVerified) {
+          try {
+            setUser(JSON.parse(storedDemo));
+          } catch {
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
       }
     });
     return () => unsubscribe();
@@ -41,6 +49,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenDemo, onOpenLogin }) => {
     sessionStorage.removeItem('otpVerified');
     localStorage.removeItem('demoUser');
     sessionStorage.removeItem('demoUser');
+    localStorage.removeItem('authToken');
+    sessionStorage.removeItem('authToken');
     signOut(auth).catch(() => {});
     setUser(null);
   };
@@ -50,7 +60,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenDemo, onOpenLogin }) => {
     { name: 'How It Works', href: '/#how-it-works' },
     { name: 'ROI Calculator', href: '/#roi-calculator' },
     { name: 'Pricing & Plans', href: '/pricing', badge: 'Save 20%' },
-    { name: 'Testimonials', href: '/#testimonials' },
+    { name: 'Comparison', href: '/#comparison' },
   ];
 
   return (

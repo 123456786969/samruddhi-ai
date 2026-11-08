@@ -58,7 +58,7 @@ export const AiDemoSimulator: React.FC<AiDemoSimulatorProps> = ({ onOpenDemo }) 
     // Preload first turn of selected language
     const sample = transcripts.find(s => s.code === code);
     if (sample && sample.conversation?.[0]) {
-      voiceEngine.preload(sample.conversation[0].text, code, sample.conversation[0].sender);
+      voiceEngine.preload(sample.conversation[0].text, code, sample.conversation[0].sender, sample.conversation[0].audioSrc);
     }
   };
 
@@ -167,7 +167,7 @@ export const AiDemoSimulator: React.FC<AiDemoSimulatorProps> = ({ onOpenDemo }) 
   // Preload initial greeting on mount
   useEffect(() => {
     if (conversation[0]) {
-      voiceEngine.preload(conversation[0].text, selectedLanguage, conversation[0].sender);
+      voiceEngine.preload(conversation[0].text, selectedLanguage, conversation[0].sender, conversation[0].audioSrc);
     }
   }, [selectedLanguage, conversation]);
 

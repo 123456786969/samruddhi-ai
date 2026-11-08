@@ -64,11 +64,6 @@ export const ComparisonTable: React.FC<ComparisonTableProps> = ({ onOpenDemo }) 
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto space-y-4 mb-16">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-teal-950/80 text-teal-200 text-xs font-bold border border-teal-800/80 shadow-md backdrop-blur-md">
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span>Why Top Real Estate Teams Choose Us</span>
-          </div>
-
           <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-white tracking-tight drop-shadow-md">
             Samruddhi AI vs. <span className="text-amber-400">Traditional Alternatives</span>
           </h2>

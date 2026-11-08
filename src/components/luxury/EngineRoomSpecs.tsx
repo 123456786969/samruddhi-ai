@@ -29,9 +29,9 @@ export const EngineRoomSpecs: React.FC = () => {
       icon: Server
     },
     {
-      metric: '10,000+',
-      label: 'Concurrent Streams',
-      subtext: 'Elastic scale handling high-traffic weekend property launches',
+      metric: 'Auto-scale',
+      label: 'Telephony Infrastructure',
+      subtext: 'Elastic WebRTC node capacity handling high-traffic weekend property launches',
       icon: Network
     },
     {
@@ -95,19 +95,6 @@ export const EngineRoomSpecs: React.FC = () => {
               </motion.div>
             );
           })}
-        </div>
-
-        {/* Live System Status Monospace Ticker */}
-        <div className="p-4 rounded-2xl bg-[#0E0E10] border border-white/[0.06] flex flex-wrap items-center justify-between gap-4 font-mono text-xs text-[#A1A1AA]">
-          <div className="flex items-center gap-3">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-[#F4F4F5] font-semibold">GLOBAL CLUSTER STATUS: OPTIMAL</span>
-            <span className="text-white/[0.2] hidden sm:inline">|</span>
-            <span className="hidden sm:inline">VOICE NODE: ASIA-SOUTH-1 (MUMBAI)</span>
-          </div>
-          <div className="text-[#D4AF37]">
-            LATENCY AVG: 418.2ms // 0 PACKET LOSS
-          </div>
         </div>
       </div>
     </section>

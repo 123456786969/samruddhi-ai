@@ -25,7 +25,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ isOpen, onClose, onOpenD
     // Preload selected language sample
     const sample = languageSamples.find(v => v.code === code);
     if (sample) {
-      voiceEngine.preload(sample.transcript, code, 'bot');
+      voiceEngine.preload(sample.transcript, code, 'bot', sample.audioSrc);
     }
   };
 
@@ -38,6 +38,7 @@ export const VideoModal: React.FC<VideoModalProps> = ({ isOpen, onClose, onOpenD
         text: currentVoice.transcript,
         lang: currentVoice.code,
         sender: 'bot',
+        audioSrc: currentVoice.audioSrc,
         onStart: () => setIsPlayingAudio(true),
         onEnd: () => setIsPlayingAudio(false),
         onError: () => setIsPlayingAudio(false)

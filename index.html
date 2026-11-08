@@ -3,6 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Gracefully handle benign Vite HMR WebSocket disconnection errors in sandbox iframe
+      window.addEventListener('unhandledrejection', function (e) {
+        var msg = (e.reason && (e.reason.message || e.reason.stack || String(e.reason))) || '';
+        if (
+          msg.includes('WebSocket') ||
+          msg.includes('vite:ws') ||
+          msg.includes('@vite/client') ||
+          msg.includes('closed without opened')
+        ) {
+          e.preventDefault();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        }
+      });
+      window.addEventListener('error', function (e) {
+        var msg = e.message || '';
+        var filename = e.filename || '';
+        if (
+          msg.includes('WebSocket') ||
+          msg.includes('vite:ws') ||
+          filename.includes('@vite/client') ||
+          msg.includes('closed without opened')
+        ) {
+          e.preventDefault();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        }
+      });
+    </script>
     <title>Samruddhi AI — Autonomous Real Estate Voice & WhatsApp Engine</title>
     <meta name="description" content="Ultra-high performance AI Voice agents and automated WhatsApp workflows designed for modern real estate developers and top channel partners." />
     <!-- Google Fonts: Playfair Display (Serif), Plus Jakarta Sans (Sans), JetBrains Mono (Mono) -->

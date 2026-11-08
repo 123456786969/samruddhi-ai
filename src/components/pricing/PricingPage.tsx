@@ -16,6 +16,8 @@ import {
   Clock,
   CheckCircle2,
   Lock,
+  MessageSquare,
+  ArrowLeft,
 } from 'lucide-react';
 import { auth } from '../../lib/firebase';
 import { apiFetch } from '../../lib/api';
@@ -37,6 +39,7 @@ import { BookDemoModal } from '../BookDemoModal';
 import { LoginModal } from '../LoginModal';
 import { useToast } from '../dashboard/ui/Toast';
 import { useNavigate } from 'react-router-dom';
+import { PricingGlobeBackground } from './PricingGlobeBackground';
 
 interface PricingPageProps {
   isEmbeddedInDashboard?: boolean;
@@ -135,7 +138,31 @@ export const PricingPage: React.FC<PricingPageProps> = ({ isEmbeddedInDashboard 
   ];
 
   const content = (
-    <div className={`space-y-12 ${isEmbeddedInDashboard ? 'py-4' : 'py-16 md:py-24'} max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-crm-sans text-[#F4F4F5]`}>
+    <div className={`space-y-12 ${isEmbeddedInDashboard ? 'py-4' : 'py-16 md:py-24'} max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 font-crm-sans text-[#F4F4F5] relative z-10`}>
+      {/* Back Button */}
+      {!isEmbeddedInDashboard && (
+        <motion.div
+          initial={{ opacity: 0, x: -15 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.4 }}
+          className="flex items-center justify-between"
+        >
+          <button
+            onClick={() => {
+              if (window.history.length > 1) {
+                navigate(-1);
+              } else {
+                navigate('/');
+              }
+            }}
+            className="group inline-flex items-center gap-2.5 px-4 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] hover:border-[#D4AF37]/50 text-gray-300 hover:text-white transition-all cursor-pointer backdrop-blur-md shadow-lg"
+          >
+            <ArrowLeft className="w-4 h-4 text-[#D4AF37] group-hover:-translate-x-1 transition-transform duration-200" />
+            <span className="text-xs font-semibold tracking-wide">Back to Home</span>
+          </button>
+        </motion.div>
+      )}
+
       {/* Founding Partner Banner */}
       {isFoundingPartner && (
         <motion.div
@@ -264,8 +291,9 @@ export const PricingPage: React.FC<PricingPageProps> = ({ isEmbeddedInDashboard 
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-400">
-                    Up to {plan.limits.users} team members
+                  <p className="text-xs text-emerald-400/90 font-medium flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>Unlimited team access • No per-seat fee</span>
                   </p>
                 </div>
 
@@ -291,19 +319,11 @@ export const PricingPage: React.FC<PricingPageProps> = ({ isEmbeddedInDashboard 
                   </div>
                 </div>
 
-                {/* Clear Limits Box */}
-                <div className="p-3.5 rounded-xl bg-[#1A1A1A] border border-[rgba(255,255,255,0.06)] space-y-2 text-xs">
+                {/* Clear Limits Box - Vridhi AI style: Call mins & WhatsApp msgs */}
+                <div className="p-3.5 rounded-xl bg-[#1A1A1A] border border-[rgba(255,255,255,0.06)] space-y-2.5 text-xs">
                   <div className="flex justify-between items-center text-gray-300">
                     <span className="flex items-center gap-1.5 text-gray-400">
-                      <Users className="w-3.5 h-3.5 text-[#D4AF37]" /> Monthly Leads:
-                    </span>
-                    <span className="font-semibold text-white font-crm-mono">
-                      {plan.limits.leadsPerMonth.toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-gray-300">
-                    <span className="flex items-center gap-1.5 text-gray-400">
-                      <Phone className="w-3.5 h-3.5 text-[#D4AF37]" /> AI Voice Minutes:
+                      <Phone className="w-3.5 h-3.5 text-[#D4AF37]" /> AI Call Minutes:
                     </span>
                     <span className="font-semibold text-white font-crm-mono">
                       {plan.limits.voiceMinutesPerMonth.toLocaleString('en-IN')} mins
@@ -311,10 +331,18 @@ export const PricingPage: React.FC<PricingPageProps> = ({ isEmbeddedInDashboard 
                   </div>
                   <div className="flex justify-between items-center text-gray-300">
                     <span className="flex items-center gap-1.5 text-gray-400">
-                      <Shield className="w-3.5 h-3.5 text-[#D4AF37]" /> Users Included:
+                      <MessageSquare className="w-3.5 h-3.5 text-emerald-400" /> WhatsApp Messages:
                     </span>
                     <span className="font-semibold text-white font-crm-mono">
-                      {plan.limits.users} seats
+                      {plan.limits.whatsappMessagesPerMonth.toLocaleString('en-IN')} msgs
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-gray-300">
+                    <span className="flex items-center gap-1.5 text-gray-400">
+                      <Users className="w-3.5 h-3.5 text-blue-400" /> Monthly CRM Leads:
+                    </span>
+                    <span className="font-semibold text-white font-crm-mono">
+                      {plan.limits.leadsPerMonth.toLocaleString('en-IN')} leads
                     </span>
                   </div>
                 </div>
@@ -454,9 +482,12 @@ export const PricingPage: React.FC<PricingPageProps> = ({ isEmbeddedInDashboard 
   }
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] flex flex-col justify-between selection:bg-[#D4AF37]/30 selection:text-white">
+    <div className="min-h-screen bg-[#0A0A0A] flex flex-col justify-between selection:bg-[#D4AF37]/30 selection:text-white relative overflow-hidden">
+      {/* 3D Dynamic Animated Globe & Space Background Engine */}
+      <PricingGlobeBackground />
+      
       <Navbar onOpenDemo={() => setDemoModalOpen(true)} onOpenLogin={() => setLoginModalOpen(true)} />
-      <main className="flex-1">{content}</main>
+      <main className="flex-1 relative z-10">{content}</main>
       <Footer />
       <BookDemoModal isOpen={demoModalOpen} onClose={() => setDemoModalOpen(false)} />
     </div>

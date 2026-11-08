@@ -79,51 +79,75 @@ const DashboardInnerLayout: React.FC = () => {
     });
   };
 
-  // Strict Firebase Auth Session Check
+  // Strict Firebase Auth Session Check with Demo / Email OTP fallback
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (!currentUser) {
-        // Clean up stale or unauthenticated demo records
-        localStorage.removeItem('demoUser');
-        sessionStorage.removeItem('demoUser');
-        localStorage.removeItem('otpVerified');
-        sessionStorage.removeItem('otpVerified');
-        setUser(null);
-        setUserData(null);
-        setLoading(false);
-        navigate('/', { replace: true });
+      if (currentUser) {
+        setUser(currentUser);
+        try {
+          const docRef = doc(db, 'users', currentUser.uid);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            setUserData(docSnap.data());
+          } else {
+            // If first-time user profile doc doesn't exist yet, bootstrap safely
+            const baseData = {
+              name: currentUser.displayName || 'Agent',
+              email: currentUser.email || '',
+              businessName: 'Samruddhi Realty',
+              slug: `agent-${currentUser.uid.slice(0, 8)}`,
+              createdAt: Date.now(),
+            };
+            setUserData(baseData);
+          }
+        } catch (err) {
+          console.warn('User profile fetch notice:', err);
+        } finally {
+          setLoading(false);
+        }
         return;
       }
 
-      setUser(currentUser);
-      try {
-        const docRef = doc(db, 'users', currentUser.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setUserData(docSnap.data());
-        } else {
-          // If first-time user profile doc doesn't exist yet, bootstrap safely
-          const baseData = {
-            name: currentUser.displayName || 'Agent',
-            email: currentUser.email || '',
-            businessName: 'Samruddhi Realty',
-            slug: `agent-${currentUser.uid.slice(0, 8)}`,
+      // Check if user authenticated via Email OTP or Quick Demo Agent
+      const storedDemo = localStorage.getItem('demoUser') || sessionStorage.getItem('demoUser');
+      const otpVerified = localStorage.getItem('otpVerified') === 'true' || sessionStorage.getItem('otpVerified') === 'true';
+
+      if (storedDemo && otpVerified) {
+        try {
+          const parsed = JSON.parse(storedDemo);
+          setUser(parsed);
+          setUserData({
+            name: parsed.displayName || 'Demo Real Estate Partner',
+            email: parsed.email || 'partner@samruddhi.ai',
+            businessName: parsed.businessName || 'Samruddhi Realty Bangalore',
+            slug: 'demo-partner',
             createdAt: Date.now(),
-          };
-          setUserData(baseData);
+          });
+          setLoading(false);
+          return;
+        } catch (e) {
+          // Invalid stored demo json
         }
-      } catch (err) {
-        console.warn('User profile fetch notice:', err);
-      } finally {
-        setLoading(false);
       }
+
+      // Clean up stale or unauthenticated records
+      localStorage.removeItem('demoUser');
+      sessionStorage.removeItem('demoUser');
+      localStorage.removeItem('otpVerified');
+      sessionStorage.removeItem('otpVerified');
+      localStorage.removeItem('authToken');
+      sessionStorage.removeItem('authToken');
+      setUser(null);
+      setUserData(null);
+      setLoading(false);
+      navigate('/', { replace: true });
     });
 
     return () => unsubscribe();
   }, [navigate]);
 
-  // Live real-time collections for live badges and command palette (guarded by real auth)
-  const isAuthReady = !!user && !!auth.currentUser;
+  // Live real-time collections for live badges and command palette
+  const isAuthReady = !!user;
   const { data: leads } = useAgentCollection<Lead>('leads', { skip: !isAuthReady });
   const { data: tasks } = useAgentCollection<Task>('tasks', { skip: !isAuthReady });
   const { data: visits } = useAgentCollection<Visit>('visits', { skip: !isAuthReady });
@@ -134,7 +158,6 @@ const DashboardInnerLayout: React.FC = () => {
   const [isTopUpOpen, setIsTopUpOpen] = useState(false);
 
   const fetchPlanStatus = useCallback(async () => {
-    if (!auth.currentUser) return;
     try {
       const res = await apiFetch('/api/billing/status');
       setPlanStatus(res);
@@ -301,6 +324,8 @@ const DashboardInnerLayout: React.FC = () => {
     sessionStorage.removeItem('otpVerified');
     localStorage.removeItem('demoUser');
     sessionStorage.removeItem('demoUser');
+    localStorage.removeItem('authToken');
+    sessionStorage.removeItem('authToken');
     try {
       await signOut(auth);
     } catch (e) {}
