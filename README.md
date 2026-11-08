@@ -31,3 +31,13 @@
          ├─► Deepgram Nova-2 (Real-time Indic ASR)              ├─► Groq (Llama 3.1 Streaming Inference)
          └─► Sarvam AI (bulbul:v1 Streaming TTS)                ├─► Dynamic Tool Execution (CRM / DB Lookup)
                                                                 └─► Meta WhatsApp Cloud API (Automated Follow-up)
+
+
+
+
+
+Key Engineering Highlights
+Sub-800ms Voice Pipeline: Full duplex WebSocket integration with chunked streaming audio serialization to prevent buffer lag.
+Anti-Screech & Feedback Elimination: Strict discrete state handling prevents audio underrun loops and acoustic feedback during continuous phone sessions.
+Deterministic TTS Guardrails: Zero-leak regex and parsing layer strips URLs, Markdown formatting, and punctuation artifacts before text hits the TTS engine.
+Instant Omnichannel Hand-off: Webhook integration dispatches structured call summaries and booking details to WhatsApp within milliseconds of call termination.
